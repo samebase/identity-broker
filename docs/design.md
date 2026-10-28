@@ -101,3 +101,39 @@ until it expires, plus the JWKS's five-minute max-age as the margin for verifier
 and for setting the output on the hub, which should follow at once. After a key compromise,
 `keys --rotate --no-overlap` drops the retired keys at once, so every token signed before stops
 verifying; the salt is kept.
+
+## Moving a hub from 0.5.0 to 0.6.0
+
+A push validates every existing document of a table the schema lists, and fails on a field the
+schema no longer declares. Rows that 0.5.0 wrote in `apps`, `registrationTokens`, `clients` and
+`authRequests` carry such fields, and 0.5.0's schema requires most of them, so no mutation of 0.5.0
+can strip them, and 0.5.0 has no command that would. The move is therefore: keep the rows outside
+the deployment, empty the tables, push 0.6.0, and import the rows back without the removed fields.
+The app ids and client ids come back unchanged, so every `sub` stays the same and no deployment
+registers again. Sign-ins and registrations fail between the second and the fourth step.
+
+1. Save the projected rows, here for the production hub (an expired token is left out, because 0.6.0
+   tokens do not expire):
+
+   ```sh
+   data() { npx convex data "$1" --component identityBroker --prod --format jsonl --limit 1000; }
+   data apps | jq -c '{appId, allowedCallbackHosts}' > apps.jsonl
+   data registrationTokens | jq -c --argjson now "$(date +%s)000" \
+     'select(.expiresAt > $now) | {tokenHash, appId, createdAt}' > registrationTokens.jsonl
+   data clients | jq -c '{clientId, appId, secretHash, redirectUri}' > clients.jsonl
+   ```
+
+2. Empty the tables with 0.5.0's own commands:
+   `npx convex run --prod identityBroker:deleteApp '{"appId":"<app id>"}'` for each app deletes its
+   row, tokens and clients, and `npx convex run --prod identityBroker:cleanup` deletes the expired
+   `authRequests`. A request still live fails the next step; run `cleanup` again ten minutes later.
+3. Push 0.6.0, with the hub's `email()` connector and `previewClientIdleDays` removed.
+4. Import the rows back:
+   `npx convex import --component identityBroker --prod --table <table> --replace <table>.jsonl` for
+   `apps`, `registrationTokens` and `clients`.
+5. Delete the tables 0.6.0 no longer names, `authorizationCodes`, `signIns` and `emailSends`, in the
+   dashboard (the component dropdown, then Delete table). The push keeps them: Convex's schema docs
+   say a schema validates only the tables it lists, and documents in other tables stay. They hold
+   code hashes, pairwise subjects and email address hashes.
+
+A client registered for `client_secret_basic` comes back, but it can no longer authenticate.
