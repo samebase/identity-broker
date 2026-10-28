@@ -281,7 +281,7 @@ describe("authorization code flow with an OAuth connector", () => {
     expect(decodeJwt(otherTokens.id_token).sub).not.toBe(claims.sub);
   });
 
-  test("a code is single use, bound to the client and the verifier; replay revokes it", async () => {
+  test("a code is single use, bound to the client and the verifier", async () => {
     const h = await createHarness({ connectors: [fakeUpstream()] });
     const { clientId, clientSecret } = await h.registerClient("bristol");
     const other = await h.registerClient("other");

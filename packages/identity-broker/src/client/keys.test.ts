@@ -80,7 +80,6 @@ describe("key set validation", () => {
 
   test("the review's key set, an empty salt and a bare RSA key, is refused", async () => {
     const review = {
-      version: 1,
       pairwiseSalt: "",
       keys: [{ kid: "k", status: "current", privateJwk: { kty: "RSA" } }],
     };
