@@ -78,6 +78,23 @@ export const list = query({
   },
 });
 
+/** Replaces the hosts a client callback may use, for example when an app gets a custom domain. */
+export const setAllowedCallbackHosts = mutation({
+  args: { appId: string(), allowedCallbackHosts: array(string()) },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const app = await ctx.db
+      .query("apps")
+      .withIndex("by_app_id", (q) => q.eq("appId", args.appId))
+      .unique();
+    if (app === null) {
+      throw new Error(`Unknown app "${args.appId}"`);
+    }
+    await ctx.db.patch("apps", app._id, { allowedCallbackHosts: args.allowedCallbackHosts });
+    return null;
+  },
+});
+
 /**
  * Deletes an app with its registration tokens and clients. This is the emergency revocation:
  * every deployment of the app stops being able to start or finish a sign-in at once.
