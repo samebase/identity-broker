@@ -841,6 +841,17 @@ export function defineIdentityBroker(config: IdentityBrokerConfig) {
             return { token, expiresAt };
           },
         }),
+        setAllowedCallbackHosts: internalMutationGeneric({
+          args: { appId: string(), allowedCallbackHosts: array(string()) },
+          returns: v.null(),
+          handler: async (ctx, args) => {
+            await ctx.runMutation(component.apps.setAllowedCallbackHosts, {
+              appId: args.appId,
+              allowedCallbackHosts: args.allowedCallbackHosts,
+            });
+            return null;
+          },
+        }),
         deleteApp: internalMutationGeneric({
           args: { appId: string() },
           returns: v.null(),

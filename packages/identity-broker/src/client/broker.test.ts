@@ -109,6 +109,31 @@ describe("metadata", () => {
 });
 
 describe("registration", () => {
+  test("a host allowed later registers", async () => {
+    const h = await createHarness({ connectors: [fakeUpstream().connector] });
+    const { appId, token } = await h.registerClient({
+      appName: "Bristol",
+      firstParty: true,
+      redirectUri: REDIRECT_URI,
+    });
+    const register = () =>
+      h.fetchBroker(`${ISSUER}/register`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          redirect_uris: ["https://bristol.example/oauth/hub/callback"],
+          client_name: "prod",
+          deployment_type: "production",
+        }),
+      });
+    expect((await register()).status).toBe(400);
+    await h.t.mutation(api.apps.setAllowedCallbackHosts, {
+      appId,
+      allowedCallbackHosts: ["bristol.example"],
+    });
+    expect((await register()).status).toBe(201);
+  });
+
   test("needs a live token and an allowed host", async () => {
     const h = await createHarness({ connectors: [fakeUpstream().connector] });
     const { token } = await h.registerClient({

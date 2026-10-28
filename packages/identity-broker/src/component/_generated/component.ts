@@ -70,6 +70,13 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         null,
         Name
       >;
+      setAllowedCallbackHosts: FunctionReference<
+        "mutation",
+        "internal",
+        { allowedCallbackHosts: Array<string>; appId: string },
+        null,
+        Name
+      >;
     };
     authRequests: {
       abandon: FunctionReference<
@@ -117,7 +124,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         },
         | { ok: true; redirectUri: string; state?: string }
         | {
-            error: "not_found" | "expired" | "wrong_status";
+            error: "expired" | "wrong_status";
             ok: false;
             redirectUri: string;
             state?: string;
@@ -282,7 +289,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         },
         | { ok: true; redirectUri: string; state?: string }
         | {
-            error: "not_found" | "expired" | "wrong_status";
+            error: "expired" | "wrong_status";
             ok: false;
             redirectUri: string;
             state?: string;
@@ -303,7 +310,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         },
         | { ok: true; redirectUri: string; state?: string }
         | {
-            error: "not_found" | "expired" | "wrong_status";
+            error: "expired" | "wrong_status";
             ok: false;
             redirectUri: string;
             state?: string;
