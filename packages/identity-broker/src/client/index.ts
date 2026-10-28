@@ -51,7 +51,10 @@ export { assertKeySetUsable } from "./jwt.js";
 export type IdentityBrokerConfig = {
   /** `components.identityBroker` of the host app. */
   component: ComponentApi;
-  /** The issuer URL, such as `https://auth.example.com`. */
+  /**
+   * The issuer: an https origin with the broker at `/`, such as `https://auth.example.com` or the
+   * hub deployment's `CONVEX_SITE_URL`.
+   */
   issuer: string;
   /** The content of `IDENTITY_BROKER_KEYS`, read in the request. */
   keys: () => string | undefined;
@@ -69,12 +72,11 @@ type Ctx = GenericActionCtx<GenericDataModel>;
 
 export function defineIdentityBroker(config: IdentityBrokerConfig) {
   const issuerUrl = new URL(config.issuer);
-  if (issuerUrl.search !== "" || issuerUrl.hash !== "") {
-    throw new Error("The issuer must not have a query or fragment");
+  // An origin's href is the origin and "/": a path, query, fragment or credentials add to it.
+  if (issuerUrl.protocol !== "https:" || issuerUrl.href !== `${issuerUrl.origin}/`) {
+    throw new Error("The issuer must be an https origin, such as https://auth.example.com");
   }
-  const issuer = issuerUrl.href.replace(/\/$/, "");
-  const prefix = issuerUrl.pathname.replace(/\/$/, "");
-  const path = (suffix: string) => `${prefix}${suffix}`;
+  const issuer = issuerUrl.origin;
   const component = config.component;
   const connectors = new Map(config.connectors.map((connector) => [connector.name, connector]));
   if (connectors.size !== config.connectors.length) {
@@ -88,7 +90,10 @@ export function defineIdentityBroker(config: IdentityBrokerConfig) {
   const callbackUrl = (connector: OauthConnector | OidcConnector) =>
     `${issuer}/connectors/${connector.name}/callback`;
 
-  /** OIDC Discovery metadata: the required members and the ones whose default differs. */
+  /**
+   * OIDC Discovery metadata: the required members, the scopes, and each member whose omitted
+   * default would differ from what the broker supports.
+   */
   const metadata = {
     issuer,
     authorization_endpoint: `${issuer}/authorize`,
@@ -334,10 +339,10 @@ export function defineIdentityBroker(config: IdentityBrokerConfig) {
     );
   });
 
-  const registerPrefix = path("/register/");
+  const registerPrefix = "/register/";
 
   /**
-   * `DELETE <prefix>/register/<client_id>` deletes a client of the token's app. The segment is
+   * `DELETE /register/<client_id>` deletes a client of the token's app. The segment is
    * compared as sent: `/register` issues `cl_` and base64url, which a path carries as is. A client that is gone and a client of another app both answer 404, never 403,
    * so a token learns nothing about another app's clients.
    */
@@ -432,18 +437,18 @@ export function defineIdentityBroker(config: IdentityBrokerConfig) {
     /** Mounts every endpoint on the host's router. */
     addHttpRoutes(http: HttpRouter): void {
       http.route({
-        path: path("/.well-known/openid-configuration"),
+        path: "/.well-known/openid-configuration",
         method: "GET",
         handler: discovery,
       });
-      http.route({ path: path("/.well-known/jwks.json"), method: "GET", handler: jwks });
-      http.route({ path: path("/authorize"), method: "GET", handler: authorize });
-      http.route({ path: path("/register"), method: "POST", handler: register });
+      http.route({ path: "/.well-known/jwks.json", method: "GET", handler: jwks });
+      http.route({ path: "/authorize", method: "GET", handler: authorize });
+      http.route({ path: "/register", method: "POST", handler: register });
       http.route({ pathPrefix: registerPrefix, method: "DELETE", handler: unregister });
-      http.route({ path: path("/token"), method: "POST", handler: token });
+      http.route({ path: "/token", method: "POST", handler: token });
       for (const connector of connectors.values()) {
         http.route({
-          path: path(`/connectors/${connector.name}/callback`),
+          path: `/connectors/${connector.name}/callback`,
           method: "GET",
           handler: upstreamCallback(connector),
         });

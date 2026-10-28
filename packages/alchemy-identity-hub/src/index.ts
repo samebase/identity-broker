@@ -8,8 +8,8 @@ import * as Schema from "effect/Schema";
 
 export interface ClientProps {
   /**
-   * The hub's issuer URL, such as `https://secret-chickadee-10.convex.site`. Normalized as the hub
-   * does: origin plus path, without a trailing slash.
+   * The hub's issuer, an https origin such as `https://secret-chickadee-10.convex.site`. Compared
+   * as its origin, so `https://HUB.EXAMPLE:443/` is `https://hub.example`.
    */
   readonly issuer: string;
   /**
@@ -22,7 +22,7 @@ export interface ClientProps {
 }
 
 export interface ClientAttributes {
-  /** The normalized issuer: origin plus path, without a trailing slash. */
+  /** The issuer's origin. */
   readonly issuer: string;
   readonly redirectUri: string;
   readonly clientId: string;
@@ -133,8 +133,8 @@ const ErrorCode = Schema.Struct({ code: Schema.String });
 const CONTROL = /\p{Cc}/u;
 
 /**
- * The issuer as the hub canonicalizes its own in `defineIdentityBroker`: origin plus path, without a
- * trailing slash. Diff compares this value, so `https://HUB.EXAMPLE:443/` is `https://hub.example`.
+ * The issuer as `defineIdentityBroker` accepts it: an https origin, compared as its origin. Diff
+ * compares this value, so `https://HUB.EXAMPLE:443/` is `https://hub.example`.
  */
 const normalizeIssuer = (issuer: string) =>
   Effect.gen(function* () {
@@ -146,20 +146,13 @@ const normalizeIssuer = (issuer: string) =>
       try: () => new URL(issuer),
       catch: () => new InvalidProps({ reason: "issuer is not a URL" }),
     });
-    if (url.search !== "" || url.hash !== "") {
-      return yield* new InvalidProps({ reason: "issuer has a query or a fragment" });
-    }
-    if (url.username !== "" || url.password !== "") {
-      return yield* new InvalidProps({ reason: "issuer contains credentials" });
-    }
-    const loopback =
-      url.protocol === "http:" && (url.hostname === "127.0.0.1" || url.hostname === "localhost");
-    if (url.protocol !== "https:" && !loopback) {
+    // An origin's href is the origin and "/": a path, query, fragment or credentials add to it.
+    if (url.protocol !== "https:" || url.href !== `${url.origin}/`) {
       return yield* new InvalidProps({
-        reason: "issuer must be an https URL, or http on 127.0.0.1 or localhost",
+        reason: "issuer must be an https origin, without a path, credentials, query, or fragment",
       });
     }
-    return `${url.origin}${url.pathname.replace(/\/$/, "")}`;
+    return url.origin;
   });
 
 /**

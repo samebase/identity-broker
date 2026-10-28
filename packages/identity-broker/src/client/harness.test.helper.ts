@@ -28,17 +28,12 @@ export type Harness = Awaited<ReturnType<typeof createHarness>>;
  * The broker mounted on a router, driven through `fetchBroker`: each request runs its handler in a
  * convex-test action, the way a Convex HTTP action runs.
  */
-export async function createHarness(options: {
-  connectors: Connector[];
-  issuer?: string;
-  keySet?: KeySet;
-}) {
+export async function createHarness(options: { connectors: Connector[]; keySet?: KeySet }) {
   const t = convexTest(schema, modules);
   const keySet = options.keySet ?? (await createKeySet());
-  const issuer = options.issuer ?? ISSUER;
   const broker = defineIdentityBroker({
     component,
-    issuer,
+    issuer: ISSUER,
     keys: () => JSON.stringify(keySet),
     connectors: options.connectors,
   });
@@ -85,7 +80,7 @@ export async function createHarness(options: {
       appId,
       createdAt: Date.now(),
     });
-    const response = await fetchBroker(`${issuer}/register`, {
+    const response = await fetchBroker(`${ISSUER}/register`, {
       method: "POST",
       headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -105,7 +100,7 @@ export async function createHarness(options: {
     };
   }
 
-  return { t, broker, http, fetchBroker, registerClient, keySet, issuer };
+  return { t, fetchBroker, registerClient };
 }
 
 export async function sha256Hex(input: string): Promise<string> {

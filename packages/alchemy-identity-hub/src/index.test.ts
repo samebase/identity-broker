@@ -276,7 +276,7 @@ test.provider("a rejected registration token fails with a message that names the
   }),
 );
 
-test.provider("the issuer is normalized as the hub normalizes its own", (stack) =>
+test.provider("the issuer is compared as its origin", (stack) =>
   Effect.gen(function* () {
     const hub = fakeHub({ origin: "https://hub.example" });
     const client = yield* deployClient(stack, { ...props, issuer: "https://HUB.EXAMPLE:443/" });
@@ -290,14 +290,16 @@ test.provider("the issuer is normalized as the hub normalizes its own", (stack) 
   }),
 );
 
-test.provider("an issuer with credentials, a query, or plain http is refused locally", (stack) =>
+test.provider("an issuer that is not an https origin is refused locally", (stack) =>
   Effect.gen(function* () {
     const hub = fakeHub();
     for (const [bad, reason] of [
-      ["https://user:pass@hub.example", "credentials"],
-      ["https://hub.example/?x=1", "a query"],
-      ["https://hub.example/#x", "a fragment"],
-      ["http://hub.example", "https"],
+      ["https://user:pass@hub.example", "https origin"],
+      ["https://hub.example/identity", "https origin"],
+      ["https://hub.example/?x=1", "https origin"],
+      ["https://hub.example/#x", "https origin"],
+      ["http://hub.example", "https origin"],
+      ["http://localhost:3211", "https origin"],
       ["https://hub.example/\n", "control character"],
     ] as const) {
       const error = yield* Effect.flip(deployClient(stack, { ...props, issuer: bad }));
@@ -307,9 +309,6 @@ test.provider("an issuer with credentials, a query, or plain http is refused loc
       expect(error.message).not.toContain(token);
     }
     expect(hub.registrations).toHaveLength(0);
-    fakeHub({ origin: "http://localhost:3211" });
-    const local = yield* deployClient(stack, { ...props, issuer: "http://localhost:3211" });
-    expect(local.issuer).toBe("http://localhost:3211");
   }),
 );
 

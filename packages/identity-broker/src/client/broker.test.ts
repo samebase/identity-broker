@@ -2,7 +2,9 @@
 import { decodeJwt } from "jose";
 import { afterEach, describe, expect, test, vi } from "vite-plus/test";
 import { api } from "../component/_generated/api.js";
+import { defineIdentityBroker } from "./index.js";
 import {
+  component,
   createHarness,
   fakeUpstream,
   ISSUER,
@@ -22,7 +24,7 @@ function authorizeUrl(
   h: Harness,
   args: { clientId: string; challenge: string; extra?: Record<string, string> },
 ) {
-  const url = new URL(`${h.issuer}/authorize`);
+  const url = new URL(`${ISSUER}/authorize`);
   url.search = new URLSearchParams({
     client_id: args.clientId,
     redirect_uri: REDIRECT_URI,
@@ -61,7 +63,7 @@ async function exchange(
     redirectUri?: string;
   },
 ) {
-  return await h.fetchBroker(`${h.issuer}/token`, {
+  return await h.fetchBroker(`${ISSUER}/token`, {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({
@@ -76,6 +78,24 @@ async function exchange(
 }
 
 describe("metadata", () => {
+  test("the issuer is an https origin", () => {
+    for (const issuer of [
+      "https://auth.test/identity",
+      "https://auth.test/?x=1",
+      "https://user:pass@auth.test",
+      "http://auth.test",
+    ]) {
+      expect(() =>
+        defineIdentityBroker({
+          component,
+          issuer,
+          keys: () => undefined,
+          connectors: [fakeUpstream().connector],
+        }),
+      ).toThrow("The issuer must be an https origin, such as https://auth.example.com");
+    }
+  });
+
   test("the discovery document and the JWKS", async () => {
     const h = await createHarness({ connectors: [fakeUpstream().connector] });
     const response = await h.fetchBroker(`${ISSUER}/.well-known/openid-configuration`);
