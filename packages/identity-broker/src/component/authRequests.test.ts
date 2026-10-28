@@ -19,8 +19,6 @@ async function pendingRequest(requestId = "r1", t = convexTest(schema, modules))
     scope: "openid",
     state: "s",
     codeChallenge: await sha256Base64Url(verifier),
-    freshLogin: false,
-    createdAt: now,
     expiresAt: now + 600_000,
   });
   return t;
@@ -65,7 +63,6 @@ describe("upstream path", () => {
     const completed = await t.mutation(api.authRequests.complete, {
       requestId: "r1",
       identity: { connector: "github", upstreamId: "42", email: "a@b.co", emailVerified: true },
-      authTime: now,
       codeHash: "ch",
       codeExpiresAt: now + 60_000,
       now,
@@ -93,7 +90,6 @@ describe("upstream path", () => {
       ok: true,
       appId: "app",
       identity: { upstreamId: "42" },
-      authTime: now,
     });
     expect(await t.query(api.authRequests.get, { requestId: "r1" })).toBeNull();
     const replay = await t.mutation(api.authRequests.exchangeCode, {
@@ -187,7 +183,6 @@ describe("upstream path", () => {
     await t.mutation(api.authRequests.complete, {
       requestId: "r1",
       identity: { connector: "g", upstreamId: "1" },
-      authTime: late,
       codeHash: "ch",
       codeExpiresAt: late + 60_000,
       now: late,
@@ -226,7 +221,6 @@ describe("upstream path", () => {
     await t.mutation(api.authRequests.complete, {
       requestId: "r1",
       identity: { connector: "g", upstreamId: "1" },
-      authTime: now,
       codeHash: "ch",
       codeExpiresAt: now + 60_000,
       now,

@@ -193,7 +193,6 @@ describe("key set validation", () => {
       issuer: "https://auth.test",
       clientId: "cl_test",
       claims: { sub: "s", connector: "fake" },
-      authTime: Date.now(),
       nonce: undefined,
     });
     expect(decodeProtectedHeader(token).kid).toBe(kid);

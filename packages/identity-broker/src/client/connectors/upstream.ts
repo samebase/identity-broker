@@ -38,7 +38,6 @@ export type UpstreamStart = {
 export async function startUpstream(args: {
   connector: OauthConnector | OidcConnector;
   callbackUrl: string;
-  freshLogin: boolean;
 }): Promise<UpstreamStart> {
   const as = await authorizationServer(args.connector);
   if (as.authorization_endpoint === undefined) {
@@ -58,23 +57,8 @@ export async function startUpstream(args: {
   if (nonce !== undefined) {
     url.searchParams.set("nonce", nonce);
   }
-  if (args.freshLogin && args.connector.kind === "oidc") {
-    // With max_age the provider must return auth_time (OIDC Core 3.1.2.1), which the callback
-    // checks; prompt=login asks for the login itself.
-    url.searchParams.set("prompt", "login");
-    url.searchParams.set("max_age", "0");
-  }
   return { url: url.toString(), state, codeVerifier, nonce };
 }
-
-export type UpstreamFinish = {
-  identity: UpstreamIdentity;
-  /**
-   * The id_token's `auth_time`, in seconds: when the provider last authenticated the user. A plain
-   * OAuth connector has no id_token and an OIDC provider may omit the claim, so it can be absent.
-   */
-  authTimeSeconds: number | undefined;
-};
 
 /**
  * The connector callback: validate the response, exchange the code, and read the identity. Errors
@@ -87,7 +71,7 @@ export async function finishUpstream(args: {
   state: string;
   codeVerifier: string;
   nonce: string | undefined;
-}): Promise<UpstreamFinish> {
+}): Promise<UpstreamIdentity> {
   const as = await authorizationServer(args.connector);
   const client: oauth.Client = { client_id: args.connector.clientId() };
   const clientAuth = oauth.ClientSecretPost(args.connector.clientSecret());
@@ -102,10 +86,7 @@ export async function finishUpstream(args: {
   );
   if (args.connector.kind === "oauth") {
     const tokens = await oauth.processAuthorizationCodeResponse(as, client, response);
-    return {
-      identity: await args.connector.identity(tokens.access_token),
-      authTimeSeconds: undefined,
-    };
+    return await args.connector.identity(tokens.access_token);
   }
   const tokens = await oauth.processAuthorizationCodeResponse(as, client, response, {
     requireIdToken: true,
@@ -128,6 +109,5 @@ export async function finishUpstream(args: {
   if (typeof claims["picture"] === "string") {
     identity.picture = claims["picture"];
   }
-  // oauth4webapi rejects an id_token whose `auth_time` is present and not a non-negative number.
-  return { identity, authTimeSeconds: claims.auth_time };
+  return identity;
 }

@@ -10,8 +10,13 @@ import {
 import { v } from "convex/values";
 import * as oauth from "oauth4webapi";
 import type { ComponentApi } from "../component/_generated/component.js";
-import type { Connector, OauthConnector, OidcConnector } from "./connectors/types.js";
-import { finishUpstream, startUpstream, type UpstreamFinish } from "./connectors/upstream.js";
+import type {
+  Connector,
+  OauthConnector,
+  OidcConnector,
+  UpstreamIdentity,
+} from "./connectors/types.js";
+import { finishUpstream, startUpstream } from "./connectors/upstream.js";
 import { errorPage } from "./html.js";
 import {
   signAccessToken,
@@ -70,8 +75,6 @@ export type IdentityBrokerConfig = {
 const AUTH_REQUEST_TTL_MS = 10 * 60 * 1000;
 /** A code is redeemed by the client's callback at once. */
 const CODE_TTL_MS = 60 * 1000;
-/** How far an upstream `auth_time` may sit outside the request's lifetime: the clocks differ. */
-const AUTH_TIME_SKEW_SECONDS = 60;
 /** The scopes the broker grants; any other requested scope is dropped. */
 const SCOPES = ["openid", "email", "profile"];
 /** How long `cleanup` keeps an audit row of an issued id_token. */
@@ -126,7 +129,6 @@ export function defineIdentityBroker(config: IdentityBrokerConfig) {
       "aud",
       "exp",
       "iat",
-      "auth_time",
       "nonce",
       "email",
       "email_verified",
@@ -186,14 +188,6 @@ export function defineIdentityBroker(config: IdentityBrokerConfig) {
     if (!rest.ok) {
       return authorizationError({ ...back, error: rest.error, description: rest.description });
     }
-    if (rest.value.prompt.includes("none")) {
-      // The broker keeps no session, so it can never answer without interaction.
-      return authorizationError({
-        ...back,
-        error: "login_required",
-        description: "This provider has no session to reuse.",
-      });
-    }
     // The consumer names the connector; the broker shows no page to choose one.
     const connector = connectors.get(rest.value.connector);
     if (connector === undefined) {
@@ -201,16 +195,6 @@ export function defineIdentityBroker(config: IdentityBrokerConfig) {
         ...back,
         error: "invalid_request",
         description: "connector must name a connector of this provider.",
-      });
-    }
-    const freshLogin = rest.value.prompt.includes("login") || rest.value.maxAge !== undefined;
-    // Freshness is honored only as prompt=login upstream; a connector without it is refused, never
-    // pretended.
-    if (freshLogin && (connector.kind === "oauth" || !connector.promptLogin)) {
-      return authorizationError({
-        ...back,
-        error: "login_required",
-        description: `${connector.label} cannot reauthenticate the user, which prompt=login or max_age asked for.`,
       });
     }
     const scopes = SCOPES.filter((scope) => rest.value.scopes.includes(scope));
@@ -225,15 +209,9 @@ export function defineIdentityBroker(config: IdentityBrokerConfig) {
       ...(rest.value.state === undefined ? {} : { state: rest.value.state }),
       ...(rest.value.nonce === undefined ? {} : { nonce: rest.value.nonce }),
       codeChallenge: rest.value.codeChallenge,
-      freshLogin,
-      createdAt: now,
       expiresAt: now + AUTH_REQUEST_TTL_MS,
     });
-    const start = await startUpstream({
-      connector,
-      callbackUrl: callbackUrl(connector),
-      freshLogin,
-    });
+    const start = await startUpstream({ connector, callbackUrl: callbackUrl(connector) });
     const result = await ctx.runMutation(component.authRequests.startUpstream, {
       requestId,
       connector: connector.name,
@@ -286,9 +264,9 @@ export function defineIdentityBroker(config: IdentityBrokerConfig) {
           description: "The sign-in expired.",
         });
       }
-      let upstream: UpstreamFinish;
+      let identity: UpstreamIdentity;
       try {
-        upstream = await finishUpstream({
+        identity = await finishUpstream({
           connector,
           callbackUrl: callbackUrl(connector),
           currentUrl: url,
@@ -326,32 +304,10 @@ export function defineIdentityBroker(config: IdentityBrokerConfig) {
           description: `${connector.label} sign-in failed.`,
         });
       }
-      let authTime = now;
-      if (claim.freshLogin) {
-        // prompt=login and max_age=0 went upstream, but a provider can still reuse its session;
-        // only the id_token's auth_time attests a login during this request. It must fall between
-        // the request's creation and now, each widened by the clock skew; auth_time is in whole
-        // seconds. A plain OAuth connector has no auth_time, and startConnector already refused it.
-        const { authTimeSeconds } = upstream;
-        if (
-          authTimeSeconds === undefined ||
-          authTimeSeconds < Math.floor(claim.createdAt / 1000) - AUTH_TIME_SKEW_SECONDS ||
-          authTimeSeconds > Math.floor(now / 1000) + AUTH_TIME_SKEW_SECONDS
-        ) {
-          await ctx.runMutation(component.authRequests.abandon, { requestId: claim.requestId });
-          return authorizationError({
-            ...back,
-            error: "login_required",
-            description: `${connector.label} did not confirm a new login, which prompt=login or max_age asked for.`,
-          });
-        }
-        authTime = authTimeSeconds * 1000;
-      }
       const code = randomToken(32);
       const completed = await ctx.runMutation(component.authRequests.complete, {
         requestId: claim.requestId,
-        identity: { connector: connector.name, ...upstream.identity },
-        authTime,
+        identity: { connector: connector.name, ...identity },
         codeHash: await sha256Hex(code),
         codeExpiresAt: now + CODE_TTL_MS,
         now,
@@ -552,7 +508,6 @@ export function defineIdentityBroker(config: IdentityBrokerConfig) {
         issuer,
         clientId: client.clientId,
         claims,
-        authTime: exchange.authTime,
         nonce: exchange.nonce,
       }),
       signAccessToken({ keySet: keys, issuer, clientId: client.clientId, claims }),

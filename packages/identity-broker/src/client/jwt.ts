@@ -35,16 +35,11 @@ export async function signIdToken(args: {
   issuer: string;
   clientId: string;
   claims: IdentityClaims;
-  authTime: number;
   nonce: string | undefined;
 }): Promise<string> {
   return await sign(
     args.keySet,
-    {
-      ...args.claims,
-      auth_time: Math.floor(args.authTime / 1000),
-      ...(args.nonce === undefined ? {} : { nonce: args.nonce }),
-    },
+    { ...args.claims, ...(args.nonce === undefined ? {} : { nonce: args.nonce }) },
     args.issuer,
     args.clientId,
   );
@@ -119,7 +114,6 @@ export async function assertKeySetUsable(keySet: KeySet): Promise<void> {
       issuer,
       clientId: issuer,
       claims: { sub: "key-check", connector: "key-check" },
-      authTime: Date.now(),
       nonce: undefined,
     });
   } catch (error) {

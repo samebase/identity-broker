@@ -40,9 +40,6 @@ const authRequestFields = {
   state: optional(string()),
   nonce: optional(string()),
   codeChallenge: string(),
-  /** `prompt=login` or `max_age` was sent: the connector must reauthenticate or refuse. */
-  freshLogin: boolean(),
-  createdAt: number(),
   expiresAt: number(),
 };
 
@@ -65,7 +62,6 @@ export const vAuthRequest = union(
     status: literal("completed"),
     ...authRequestFields,
     identity: vUpstreamIdentity,
-    authTime: number(),
   }),
 );
 

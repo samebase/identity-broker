@@ -67,8 +67,6 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         { connector: string; now: number; upstreamStateHash: string },
         | {
             connector: string;
-            createdAt: number;
-            freshLogin: boolean;
             redirectUri: string;
             requestId: string;
             state?: string;
@@ -89,7 +87,6 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         "mutation",
         "internal",
         {
-          authTime: number;
           codeExpiresAt: number;
           codeHash: string;
           identity: {
@@ -120,9 +117,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
           appId: string;
           clientId: string;
           codeChallenge: string;
-          createdAt: number;
           expiresAt: number;
-          freshLogin: boolean;
           nonce?: string;
           redirectUri: string;
           requestId: string;
@@ -144,7 +139,6 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         },
         | {
             appId: string;
-            authTime: number;
             clientId: string;
             identity: {
               connector: string;
@@ -169,9 +163,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
             appId: string;
             clientId: string;
             codeChallenge: string;
-            createdAt: number;
             expiresAt: number;
-            freshLogin: boolean;
             nonce?: string;
             redirectUri: string;
             requestId: string;
@@ -184,9 +176,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
             clientId: string;
             codeChallenge: string;
             connector: string;
-            createdAt: number;
             expiresAt: number;
-            freshLogin: boolean;
             nonce?: string;
             redirectUri: string;
             requestId: string;
@@ -202,9 +192,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
             clientId: string;
             codeChallenge: string;
             connector: string;
-            createdAt: number;
             expiresAt: number;
-            freshLogin: boolean;
             nonce?: string;
             redirectUri: string;
             requestId: string;
@@ -214,12 +202,9 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
           }
         | {
             appId: string;
-            authTime: number;
             clientId: string;
             codeChallenge: string;
-            createdAt: number;
             expiresAt: number;
-            freshLogin: boolean;
             identity: {
               connector: string;
               email?: string;

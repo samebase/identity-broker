@@ -190,8 +190,6 @@ export type AuthorizeInput = {
   state: string | undefined;
   nonce: string | undefined;
   codeChallenge: string;
-  prompt: string[];
-  maxAge: number | undefined;
   /** The connector the consumer named; the handler checks that it is configured. */
   connector: string;
 };
@@ -249,20 +247,17 @@ export function validateAuthorizeRest(
   if (params.get("code_challenge_method") !== "S256") {
     return invalid(400, "invalid_request", 'code_challenge_method must be "S256".');
   }
+  // The broker keeps no session: it cannot answer without interaction, and it cannot attest when
+  // the user last signed in upstream, which prompt=login and max_age ask about.
   const prompt = (params.get("prompt") ?? "").split(/\s+/).filter((value) => value.length > 0);
-  if (prompt.some((value) => value !== "none" && value !== "login")) {
+  if (prompt.some((value) => value !== "none")) {
     return invalid(400, "invalid_request", "prompt value not supported");
   }
-  if (prompt.includes("none") && prompt.length > 1) {
-    return invalid(400, "invalid_request", "prompt=none cannot be combined with other values.");
+  if (prompt.length > 0) {
+    return invalid(400, "login_required", "This provider has no session to reuse.");
   }
-  const maxAgeRaw = params.get("max_age");
-  let maxAge: number | undefined;
-  if (maxAgeRaw !== null) {
-    maxAge = Number(maxAgeRaw);
-    if (!Number.isInteger(maxAge) || maxAge < 0) {
-      return invalid(400, "invalid_request", "max_age must be a non-negative integer.");
-    }
+  if (params.has("max_age")) {
+    return invalid(400, "invalid_request", "max_age is not supported.");
   }
   const connector = params.get("connector") ?? "";
   return {
@@ -274,8 +269,6 @@ export function validateAuthorizeRest(
       state,
       nonce,
       codeChallenge,
-      prompt,
-      maxAge,
       connector,
     },
   };

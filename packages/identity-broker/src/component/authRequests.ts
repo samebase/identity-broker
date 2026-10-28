@@ -4,7 +4,7 @@ import type { Doc } from "./_generated/dataModel";
 import { sha256Base64Url } from "./crypto";
 import { vAuthRequest, vUpstreamIdentity } from "./schema";
 
-const { boolean, literal, number, object, optional, string, union } = v;
+const { literal, number, object, optional, string, union } = v;
 
 /** Where the user goes back to once a request fails or finishes: the client's exact redirect URI. */
 const vReturn = object({ redirectUri: string(), state: optional(string()) });
@@ -38,8 +38,6 @@ export const create = mutation({
     state: optional(string()),
     nonce: optional(string()),
     codeChallenge: string(),
-    freshLogin: boolean(),
-    createdAt: number(),
     expiresAt: number(),
   },
   returns: v.null(),
@@ -54,8 +52,6 @@ export const create = mutation({
       ...optionalField("state", args.state),
       ...optionalField("nonce", args.nonce),
       codeChallenge: args.codeChallenge,
-      freshLogin: args.freshLogin,
-      createdAt: args.createdAt,
       expiresAt: args.expiresAt,
     });
     return null;
@@ -121,9 +117,6 @@ const vClaimResult = union(
     connector: string(),
     upstreamCodeVerifier: string(),
     upstreamNonce: optional(string()),
-    freshLogin: boolean(),
-    /** When /authorize stored the request: an upstream `auth_time` before it is an old session. */
-    createdAt: number(),
     ...vReturn.fields,
   }),
   object({ status: literal("expired"), requestId: string(), ...vReturn.fields }),
@@ -167,8 +160,6 @@ export const claimUpstream = mutation({
       connector: request.connector,
       upstreamCodeVerifier: request.upstreamCodeVerifier,
       ...optionalField("upstreamNonce", request.upstreamNonce),
-      freshLogin: request.freshLogin,
-      createdAt: request.createdAt,
       ...back,
     };
   },
@@ -179,7 +170,6 @@ export const complete = mutation({
   args: {
     requestId: string(),
     identity: vUpstreamIdentity,
-    authTime: number(),
     codeHash: string(),
     codeExpiresAt: number(),
     now: number(),
@@ -202,7 +192,6 @@ export const complete = mutation({
       ...baseFields(request),
       expiresAt: completedExpiresAt(request, args.codeExpiresAt),
       identity: args.identity,
-      authTime: args.authTime,
     });
     await ctx.db.insert("authorizationCodes", {
       codeHash: args.codeHash,
@@ -236,7 +225,6 @@ const vExchangeResult = union(
     scope: string(),
     nonce: optional(string()),
     identity: vUpstreamIdentity,
-    authTime: number(),
   }),
   object({ ok: literal(false), description: string() }),
 );
@@ -297,7 +285,6 @@ export const exchangeCode = mutation({
       scope: request.scope,
       ...optionalField("nonce", request.nonce),
       identity: request.identity,
-      authTime: request.authTime,
     };
   },
 });
@@ -332,8 +319,6 @@ function baseFields(request: Doc<"authRequests">) {
     ...optionalField("state", request.state),
     ...optionalField("nonce", request.nonce),
     codeChallenge: request.codeChallenge,
-    freshLogin: request.freshLogin,
-    createdAt: request.createdAt,
     expiresAt: request.expiresAt,
   };
 }

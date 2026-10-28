@@ -78,21 +78,13 @@ describe("authorize", () => {
   };
 
   test("target then rest", () => {
-    const params = new URLSearchParams({
-      ...base,
-      state: "s",
-      nonce: "n",
-      prompt: "login",
-      max_age: "0",
-    });
+    const params = new URLSearchParams({ ...base, state: "s", nonce: "n" });
     const target = validateAuthorizeTarget(params);
     expect(target.ok).toBe(true);
     if (!target.ok) return;
     const rest = validateAuthorizeRest(params, target.value);
     expect(rest.ok).toBe(true);
     if (rest.ok) {
-      expect(rest.value.prompt).toEqual(["login"]);
-      expect(rest.value.maxAge).toBe(0);
       expect(rest.value.scopes).toEqual(["openid", "email"]);
     }
   });
@@ -130,12 +122,10 @@ describe("authorize", () => {
     const noPkce = new URLSearchParams(base);
     noPkce.delete("code_challenge");
     expect(validateAuthorizeRest(noPkce, target).ok).toBe(false);
-    const mixed = validateAuthorizeRest(
-      new URLSearchParams({ ...base, prompt: "none login" }),
-      target,
-    );
-    expect(mixed.ok).toBe(false);
-    for (const prompt of ["consent", "login select_account"]) {
+    expect(
+      validateAuthorizeRest(new URLSearchParams({ ...base, prompt: "none" }), target),
+    ).toMatchObject({ ok: false, error: "login_required" });
+    for (const prompt of ["login", "consent", "none login"]) {
       expect(validateAuthorizeRest(new URLSearchParams({ ...base, prompt }), target)).toMatchObject(
         {
           ok: false,
@@ -144,6 +134,9 @@ describe("authorize", () => {
         },
       );
     }
+    expect(
+      validateAuthorizeRest(new URLSearchParams({ ...base, max_age: "0" }), target),
+    ).toMatchObject({ ok: false, error: "invalid_request" });
   });
 });
 

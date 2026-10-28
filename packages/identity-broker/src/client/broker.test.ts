@@ -2,12 +2,10 @@
 import { decodeJwt } from "jose";
 import { afterEach, describe, expect, test, vi } from "vite-plus/test";
 import { api } from "../component/_generated/api.js";
-import { google } from "./connectors/google.js";
 import { defineIdentityBroker } from "./index.js";
 import {
   component,
   createHarness,
-  fakeOidcUpstream,
   fakeUpstream,
   ISSUER,
   pkce,
@@ -287,7 +285,6 @@ describe("authorization code flow with an OAuth connector", () => {
     expect(claims["email"]).toBe("octo@example.com");
     expect(claims["email_verified"]).toBe(true);
     expect(claims["connector"]).toBe("fake");
-    expect(typeof claims.auth_time).toBe("number");
     expect(claims).not.toHaveProperty("connector_account_id");
 
     const userinfo = await h.fetchBroker(`${ISSUER}/userinfo`, {
@@ -431,161 +428,13 @@ describe("authorization code flow with an OAuth connector", () => {
       );
     }
 
-    // An OAuth connector cannot force a fresh login, whether prompt=login or max_age asked for it:
-    // the answer goes back to the client before anything goes upstream.
-    for (const extra of [{ prompt: "login" }, { max_age: "300" }]) {
+    // The broker keeps no session, so it cannot attest a fresh login: prompt=login and max_age are
+    // refused, never pretended.
+    for (const extra of [{ prompt: "login" }, { max_age: "0" }]) {
       const fresh = await h.fetchBroker(authorizeUrl(h, { clientId, challenge, extra }));
       const location = new URL(fresh.headers.get("location") ?? "");
       expect(location.origin + location.pathname).toBe(REDIRECT_URI);
-      expect(location.searchParams.get("error")).toBe("login_required");
-    }
-  });
-
-  test("Google documents no prompt=login, so a fresh login through it is refused", async () => {
-    const h = await createHarness({
-      connectors: [google({ clientId: () => "google-client", clientSecret: () => "s" })],
-    });
-    const { clientId } = await h.registerClient("bristol");
-    for (const extra of [{ prompt: "login" }, { max_age: "0" }]) {
-      const { challenge } = await pkce();
-      const response = await h.fetchBroker(
-        authorizeUrl(h, { clientId, challenge, extra: { ...extra, connector: "google" } }),
-      );
-      const location = new URL(response.headers.get("location") ?? "");
-      expect(location.origin + location.pathname).toBe(REDIRECT_URI);
-      expect(location.searchParams.get("error")).toBe("login_required");
-      expect(location.searchParams.get("error_description")).toBe(
-        "Google cannot reauthenticate the user, which prompt=login or max_age asked for.",
-      );
-    }
-  });
-
-  /**
-   * One sign-in through the fake OIDC provider. `authTime` gets the second the request was created
-   * in and returns the `auth_time` the provider signs (`undefined`: none).
-   */
-  async function oidcSignIn(
-    h: Harness,
-    idp: Awaited<ReturnType<typeof fakeOidcUpstream>>,
-    args: {
-      clientId: string;
-      extra: Record<string, string>;
-      authTime: (createdSecond: number) => number | undefined;
-    },
-  ) {
-    const { challenge, verifier } = await pkce();
-    const started = await h.fetchBroker(
-      authorizeUrl(h, {
-        clientId: args.clientId,
-        challenge,
-        extra: { ...args.extra, connector: "idp" },
-      }),
-    );
-    const upstream = new URL(started.headers.get("location") ?? "");
-    expect(upstream.origin).toBe("https://server.example.com");
-    const state = upstream.searchParams.get("state") ?? "";
-    const stateHash = await sha256Hex(state);
-    const stored = await h.t.run(
-      async (ctx) =>
-        await ctx.db
-          .query("authRequests")
-          .withIndex("by_upstream_state_hash", (q) => q.eq("upstreamStateHash", stateHash))
-          .unique(),
-    );
-    if (stored === null) {
-      throw new Error("/authorize stored no request for the upstream state");
-    }
-    const createdSecond = Math.floor(stored.createdAt / 1000);
-    idp.nextIdToken({
-      nonce: upstream.searchParams.get("nonce") ?? "",
-      authTime: args.authTime(createdSecond),
-    });
-    const callback = new URL(upstream.searchParams.get("redirect_uri") ?? "");
-    callback.searchParams.set("code", "upstream-code");
-    callback.searchParams.set("state", state);
-    const back = await h.fetchBroker(callback);
-    expect(back.status).toBe(302);
-    return {
-      prompt: upstream.searchParams.get("prompt"),
-      maxAge: upstream.searchParams.get("max_age"),
-      location: new URL(back.headers.get("location") ?? ""),
-      verifier,
-      requestId: stored.requestId,
-      createdSecond,
-    };
-  }
-
-  test("a fresh login completes only with an upstream auth_time inside the request, give or take 60 seconds", async () => {
-    // The clock stands still, so the request is created and its callback runs in one second.
-    vi.useFakeTimers({ now: 1_800_000_000_500, toFake: ["Date"] });
-    const idp = await fakeOidcUpstream();
-    const h = await createHarness({ connectors: [idp.connector] });
-    const { clientId, clientSecret } = await h.registerClient("bristol");
-    // Both ways to ask for a fresh login, against an upstream auth_time that is missing, or this
-    // many seconds from the request's second: past each edge of the 60-second skew, on it, inside.
-    const accepted = new Map([
-      [-61, false],
-      [-60, true],
-      [-1, true],
-      [0, true],
-      [60, true],
-      [61, false],
-    ]);
-    for (const extra of [{ prompt: "login" }, { max_age: "300" }]) {
-      for (const offset of [undefined, ...accepted.keys()]) {
-        const signIn = await oidcSignIn(h, idp, {
-          clientId,
-          extra,
-          authTime: (created) => (offset === undefined ? undefined : created + offset),
-        });
-        expect(signIn.createdSecond).toBe(1_800_000_000);
-        expect(signIn.prompt).toBe("login");
-        expect(signIn.maxAge).toBe("0");
-        if (offset === undefined || !accepted.get(offset)) {
-          expect(signIn.location.origin + signIn.location.pathname).toBe(REDIRECT_URI);
-          expect(signIn.location.searchParams.get("error")).toBe("login_required");
-          expect(signIn.location.searchParams.get("error_description")).toBe(
-            "IdP did not confirm a new login, which prompt=login or max_age asked for.",
-          );
-          expect(signIn.location.searchParams.get("code")).toBeNull();
-          // The request is abandoned: nothing is left to finish.
-          expect(await h.t.query(api.authRequests.get, { requestId: signIn.requestId })).toBeNull();
-          continue;
-        }
-        const code = signIn.location.searchParams.get("code") ?? "";
-        expect(code).not.toBe("");
-        const tokens = await exchange(h, {
-          code,
-          clientId,
-          clientSecret,
-          verifier: signIn.verifier,
-        });
-        expect(tokens.status).toBe(200);
-        const idToken = decodeJwt((await tokens.json()).id_token);
-        expect(idToken.auth_time).toBe(signIn.createdSecond + offset);
-      }
-    }
-  });
-
-  test("without a fresh login, the sign-in completes at the hub's time, upstream auth_time or not", async () => {
-    const idp = await fakeOidcUpstream();
-    const h = await createHarness({ connectors: [idp.connector] });
-    const { clientId, clientSecret } = await h.registerClient("bristol");
-    for (const offset of [undefined, -3600]) {
-      const signIn = await oidcSignIn(h, idp, {
-        clientId,
-        extra: {},
-        authTime: (created) => (offset === undefined ? undefined : created + offset),
-      });
-      expect(signIn.prompt).toBeNull();
-      expect(signIn.maxAge).toBeNull();
-      const code = signIn.location.searchParams.get("code") ?? "";
-      expect(code).not.toBe("");
-      const tokens = await exchange(h, { code, clientId, clientSecret, verifier: signIn.verifier });
-      expect(tokens.status).toBe(200);
-      const idToken = decodeJwt((await tokens.json()).id_token);
-      // The callback's time, never the upstream's hour-old value.
-      expect(idToken.auth_time).toBeGreaterThanOrEqual(signIn.createdSecond);
+      expect(location.searchParams.get("error")).toBe("invalid_request");
     }
   });
 
@@ -787,8 +636,6 @@ describe("cleanup", () => {
       redirectUri: REDIRECT_URI,
       scope: "openid",
       codeChallenge: "c",
-      freshLogin: false,
-      createdAt: now - 3_600_000,
       expiresAt: now - 1,
     });
     await h.t.mutation(api.signIns.record, {
@@ -877,8 +724,6 @@ describe("cleanup", () => {
       redirectUri: REDIRECT_URI,
       scope: "openid",
       codeChallenge: "c",
-      freshLogin: false,
-      createdAt: now - 600_000,
     } as const;
     await h.t.run(async (ctx) => {
       // 0.4.0 ran the first batch and at most 50 continuations, 200 rows each.

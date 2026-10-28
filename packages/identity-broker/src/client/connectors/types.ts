@@ -32,11 +32,6 @@ export type OidcConnector = Credentials & {
   label: string;
   issuer: string;
   scopes: string[];
-  /**
-   * The provider documents `prompt=login`, so a fresh login (`prompt=login` or `max_age`) is sent
-   * upstream as that. Without it, a fresh login answers `login_required`.
-   */
-  promptLogin: boolean;
 };
 
 export type Connector = OauthConnector | OidcConnector;
