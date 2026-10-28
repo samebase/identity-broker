@@ -1,22 +1,3 @@
-// IdentityHub.Client: one Convex deployment registered as an OAuth client of an identity hub, an
-// OpenID Provider built with @samebase/identity-broker.
-//
-// The hub registers a client at POST <issuer>/register (RFC 7591), answering 201 with a client_id
-// and a client_secret, and deletes one at DELETE <issuer>/register/<client id>, answering 204. Both
-// take the app's registration token as a Bearer token. It has no endpoint to read or change a
-// client, so:
-// - A changed issuer, redirectUri, or deploymentType replaces the resource: it registers a new
-//   client, and the replaced client is deleted on the hub.
-// - A changed registrationToken updates the state without a hub call, so a later delete sends the
-//   newest token. A changed clientName or softwareVersion makes no hub call, and the attributes stay
-//   the ones the client was registered with.
-// - read returns the state as it is.
-// - delete deletes the client on the hub. A 404 means it is already gone. A 401 means the token in
-//   state can never delete it: the client stays on the hub, and a warning names the hub command
-//   that deletes it. A network error or any other answer fails the delete, and the resource stays
-//   in state, so the next deploy or destroy tries again.
-// A registration is never retried within one deploy: each request that succeeds creates one more
-// client.
 import { Resource } from "alchemy";
 import { isResolved } from "alchemy/Diff";
 import * as Provider from "alchemy/Provider";
@@ -135,10 +116,7 @@ export class RegistrationFailed extends Schema.TaggedError<RegistrationFailed>()
   }
 }
 
-/**
- * The hub could not be reached to delete a client, or answered other than 204, 404, or 401. The
- * resource stays in state, so the next deploy or destroy tries again.
- */
+/** The hub could not delete the client; the resource stays in state. */
 export class DeletionFailed extends Schema.TaggedError<DeletionFailed>()("DeletionFailed", {
   issuer: Schema.String,
   clientId: Schema.String,
@@ -156,6 +134,8 @@ const RegisteredClient = Schema.Struct({
 });
 /** RFC 7591 3.2.2, the field this resource reads. */
 const RegistrationError = Schema.Struct({ error: Schema.String });
+/** The broker's 404 for a client it does not hold. A hub without the delete route answers text. */
+const ClientGone = Schema.Struct({ error: Schema.Literal("invalid_client") });
 /** The part of a fetch error's cause that is a local diagnostic, such as `ECONNREFUSED`. */
 const ErrorCode = Schema.Struct({ code: Schema.String });
 
@@ -190,19 +170,6 @@ const normalizeIssuer = (issuer: string) =>
       });
     }
     return `${url.origin}${url.pathname.replace(/\/$/, "")}`;
-  });
-
-/**
- * The registration token as a header value. fetch refuses a control character with an error
- * message that quotes the value, so it is refused here first.
- */
-const headerToken = (registrationToken: Redacted.Redacted<string>) =>
-  Effect.gen(function* () {
-    const token = Redacted.value(registrationToken);
-    if (CONTROL.test(token)) {
-      return yield* new InvalidProps({ reason: "registrationToken contains a control character" });
-    }
-    return token;
   });
 
 /**
@@ -283,12 +250,13 @@ const register = (issuer: string, token: string, props: ClientProps) =>
     });
   });
 
-/**
- * Deletes a client on its hub. 204 deletes it, and 404 means it is already gone. A 401 means the
- * token is expired or wrong, and the same token never succeeds on a retry, so the client stays on
- * the hub with a warning. Anything else fails with DeletionFailed. The token goes only into the
- * request header, and the hub's answer is never read.
- */
+/** The warning for a client this resource stops tracking without deleting it on the hub. */
+const leftOnHub = (output: ClientAttributes, reason: string) =>
+  Effect.logWarning(
+    `Client ${output.clientId} stays registered on ${output.issuer}: ${reason}. Delete it on the hub with \`npx convex run --prod identityBroker:deleteClient '{"clientId":"${output.clientId}"}'\`.`,
+  );
+
+/** 204 or the broker's invalid_client 404 is done; 401 warns; anything else fails. */
 const unregister = (output: ClientAttributes, token: string) =>
   Effect.gen(function* () {
     const { issuer, clientId } = output;
@@ -302,11 +270,17 @@ const unregister = (output: ClientAttributes, token: string) =>
         }),
       catch: (cause) => new DeletionFailed({ issuer, clientId, reason: requestFailure(cause) }),
     });
-    if (response.status === 204 || response.status === 404) return;
+    if (response.status === 204) return;
     if (response.status === 401) {
-      return yield* Effect.logWarning(
-        `Client ${clientId} stays registered on ${issuer}: the hub rejected the registration token, which is expired or wrong. Delete the client on the hub with \`npx convex run --prod identityBroker:deleteClient '{"clientId":"${clientId}"}'\`.`,
+      return yield* leftOnHub(
+        output,
+        "the hub rejected the registration token, which is expired or wrong",
       );
+    }
+    if (response.status === 404) {
+      const body: unknown = yield* Effect.promise(() => response.json().catch(() => undefined));
+      if (Schema.is(ClientGone)(body)) return;
+      return yield* new DeletionFailed({ issuer, clientId, reason: "the hub has no delete route" });
     }
     return yield* new DeletionFailed({
       issuer,
@@ -332,15 +306,26 @@ const ClientProvider = Provider.succeed(Client, {
   // The hub has no endpoint to read a client, so the state is the only record.
   read: ({ output }) => Effect.succeed(output),
 
-  reconcile: Effect.fn(function* ({ news, output }) {
+  reconcile: Effect.fn(function* ({ news, olds, output }) {
     const issuer = yield* normalizeIssuer(news.issuer);
+    const token = Redacted.value(news.registrationToken);
+    // fetch refuses a control character in a header with an error message that quotes the value.
     // Checked even when nothing registers: the token is stored for a later delete.
-    const token = yield* headerToken(news.registrationToken);
+    if (CONTROL.test(token)) {
+      return yield* new InvalidProps({ reason: "registrationToken contains a control character" });
+    }
     if (output !== undefined && registeredFor(output, issuer, news)) return output;
     const { clientId, clientSecret } = yield* register(issuer, token, news);
-    // An update whose props were unresolved at plan time registers in place of a replacement, so
-    // it deletes the client it replaces, as a replacement's delete does.
-    if (output !== undefined) yield* unregister(output, token);
+    // An update whose props were unresolved at plan time registers in place of a replacement. The
+    // old client lives at the old issuer under the old token. The new client is returned whatever
+    // happens to the old one, so a failed delete only warns.
+    if (output !== undefined) {
+      yield* unregister(
+        output,
+        // @ts-expect-error olds is undefined only for an adopted resource, and read returns the state's output, so this resource is never adopted.
+        Redacted.value(olds.registrationToken),
+      ).pipe(Effect.catchTag("DeletionFailed", (error) => leftOnHub(output, error.reason)));
+    }
     return {
       issuer,
       redirectUri: news.redirectUri,

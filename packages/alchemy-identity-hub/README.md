@@ -50,24 +50,28 @@ follow redirects.
   newest token. A changed `clientName` or `softwareVersion` makes no hub call and keeps the
   attributes.
 - Read returns the state as it is.
-- Destroy sends `DELETE <issuer>/register/<client id>` with the token in state. A 204, or a 404 for
-  a client that is already gone, ends the resource. A 401 means that token is expired or wrong, and
-  a retry with it cannot succeed: the resource ends, the client stays on the hub, and a warning
-  names `identityBroker:deleteClient` to delete it there. A network error or any other answer fails
-  with `DeletionFailed` and keeps the resource in state, so the next destroy tries again.
+- Destroy sends `DELETE <issuer>/register/<client id>` with the token in state. A 204, or the hub's
+  404 with the error `invalid_client` for a client that is already gone, ends the resource. A 401
+  means that token is expired or wrong, and a retry with it cannot succeed: the resource ends, the
+  client stays on the hub, and a warning names `identityBroker:deleteClient` to delete it there. A
+  network error or any other answer fails with `DeletionFailed` and keeps the resource in state, so
+  the next destroy tries again.
+- A `redirectUri` that resolves only during the deploy registers in place: the new client at the new
+  `issuer` with the new token, then a delete of the old client at the old `issuer` with the old
+  token. The new client is kept whatever the delete answers; a failed delete is a warning that names
+  `identityBroker:deleteClient`.
 - Within one deploy, a registration is never retried, because each successful request creates a
   client.
 
 ## Limits
 
 - Deleting needs `@samebase/identity-broker` 0.5.0 or later on the hub. An older hub has no delete
-  route and answers 404, which reads as already gone, so the client stays there.
+  route: its 404 has no `invalid_client` error, so destroy fails with `DeletionFailed` until the hub
+  is upgraded.
 - A stage whose token in state has expired leaves its client on the hub when destroyed. Deploy it
   once with a fresh token first: the deploy stores the token without a hub call.
 - A deploy that fails after the hub created the client and before Alchemy saved the client to state
-  leaves that client on the hub. The next deploy registers another client. A `redirectUri` that
-  resolves only during the deploy registers in place, then deletes the old client; a failed delete
-  there is such a failure.
+  leaves that client on the hub. The next deploy registers another client.
 - Two separate `Convex.EnvironmentVariable` resources write the client id and the client secret. A
   failure between the two writes can leave a mismatched pair on the deployment until the next
   deploy.
@@ -89,8 +93,9 @@ follow redirects.
   answer. The message carries only the status, or the error name and code, such as `ECONNREFUSED`.
   Check `issuer`.
 - `DeletionFailed`: a delete could not reach the hub within 15 seconds, was redirected, or got an
-  answer other than 204, 404, or 401. The message carries only the status, or the error name and
-  code. The resource stays in state, and the next deploy or destroy tries again.
+  answer other than 204, the hub's `invalid_client` 404, or 401. A 404 without that error reads "the
+  hub has no delete route". The message carries only the status, or the error name and code. The
+  resource stays in state, and the next deploy or destroy tries again.
 
 No message or log line contains the token, the client secret, or any text from the hub's answer.
 

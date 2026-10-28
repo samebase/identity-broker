@@ -23,13 +23,8 @@ const props = {
 
 type SeenRequest = { url: string; authorization: string | null; redirect: string };
 
-/**
- * A hub behind a stubbed fetch that answers as the `register` and `unregister` handlers of
- * @samebase/identity-broker do. POST <issuer>/register: 401 for a token outside `tokens`, 201 with
- * a new client otherwise. DELETE <issuer>/register/<client id>: 401 for a token outside `tokens`,
- * 404 for a client it does not hold, 204 otherwise. `answer` replaces the answer to a registration
- * with a valid token; `deleteAnswer`, while set, replaces the answer to a delete with a valid token.
- */
+const hubs = new Map<string, (request: Request) => Promise<Response>>();
+
 const fakeHub = (
   options: { origin?: string; tokens?: readonly string[]; answer?: () => Response } = {},
 ) => {
@@ -49,71 +44,113 @@ const fakeHub = (
       },
       { status: 401 },
     );
+  hubs.set(origin, async (request) => {
+    const seen = {
+      url: request.url,
+      authorization: request.headers.get("authorization"),
+      redirect: request.redirect,
+    };
+    const authorized = tokens.some((known) => seen.authorization === `Bearer ${known}`);
+    if (request.method === "DELETE" && request.url.startsWith(`${origin}/register/`)) {
+      hub.deletions.push(seen);
+      if (!authorized) return invalidToken();
+      if (hub.deleteAnswer !== undefined) return hub.deleteAnswer();
+      if (!clients.delete(request.url.slice(`${origin}/register/`.length))) {
+        return Response.json(
+          {
+            error: "invalid_client",
+            error_description:
+              "No client with this id belongs to the app of this registration token.",
+          },
+          { status: 404 },
+        );
+      }
+      return new Response(null, { status: 204 });
+    }
+    if (request.method !== "POST" || request.url !== `${origin}/register`) {
+      return new Response("No matching routes found", { status: 404 });
+    }
+    const body: unknown = await request.json();
+    hub.registrations.push({ ...seen, body });
+    if (!authorized) return invalidToken();
+    if (options.answer !== undefined) return options.answer();
+    const clientId = `cl_${hub.registrations.length}`;
+    clients.add(clientId);
+    return Response.json(
+      {
+        client_id: clientId,
+        client_secret: `secret-${hub.registrations.length}`,
+        client_id_issued_at: 1793174400,
+        client_secret_expires_at: 0,
+        redirect_uris: [redirectUri],
+        client_name: "Bristol preview",
+        software_id: "bristol-ab12c",
+        software_version: "happy-otter-123",
+        deployment_type: "preview",
+        token_endpoint_auth_method: "client_secret_post",
+        grant_types: ["authorization_code"],
+        response_types: ["code"],
+      },
+      { status: 201 },
+    );
+  });
   vi.stubGlobal(
     "fetch",
     vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const request = new Request(input, init);
-      const seen = {
-        url: request.url,
-        authorization: request.headers.get("authorization"),
-        redirect: request.redirect,
-      };
-      const authorized = tokens.some((known) => seen.authorization === `Bearer ${known}`);
-      if (request.method === "DELETE" && request.url.startsWith(`${origin}/register/`)) {
-        hub.deletions.push(seen);
-        if (!authorized) return invalidToken();
-        if (hub.deleteAnswer !== undefined) return hub.deleteAnswer();
-        if (!clients.delete(request.url.slice(`${origin}/register/`.length))) {
-          return Response.json(
-            {
-              error: "invalid_client",
-              error_description:
-                "No client with this id belongs to the app of this registration token.",
-            },
-            { status: 404 },
-          );
-        }
-        return new Response(null, { status: 204 });
-      }
-      if (request.method !== "POST" || request.url !== `${origin}/register`) {
-        return new Response("No matching routes found", { status: 404 });
-      }
-      const body: unknown = await request.json();
-      hub.registrations.push({ ...seen, body });
-      if (!authorized) return invalidToken();
-      if (options.answer !== undefined) return options.answer();
-      const clientId = `cl_${hub.registrations.length}`;
-      clients.add(clientId);
-      return Response.json(
-        {
-          client_id: clientId,
-          client_secret: `secret-${hub.registrations.length}`,
-          client_id_issued_at: 1793174400,
-          client_secret_expires_at: 0,
-          redirect_uris: [redirectUri],
-          client_name: "Bristol preview",
-          software_id: "bristol-ab12c",
-          software_version: "happy-otter-123",
-          deployment_type: "preview",
-          token_endpoint_auth_method: "client_secret_post",
-          grant_types: ["authorization_code"],
-          response_types: ["code"],
-        },
-        { status: 201 },
-      );
+      const serve = hubs.get(new URL(request.url).origin);
+      return serve === undefined
+        ? new Response("No matching routes found", { status: 404 })
+        : await serve(request);
     }),
   );
   return hub;
 };
 
-/** The DELETE request that deletes `clientId` with `bearer`. */
-const deletion = (clientId: string, bearer = token) => ({
-  url: `${issuer}/register/${clientId}`,
+const deletion = (clientId: string, bearer = token, origin = issuer) => ({
+  url: `${origin}/register/${clientId}`,
   authorization: `Bearer ${bearer}`,
   redirect: "error",
 });
 
+const hubB = "https://hub-b.example";
+const tokenB = "rt_hub-b-token";
+
+/**
+ * First, and Second at `second`'s hub. Second's redirectUri derives from First's client id, which a
+ * replacement of First leaves unresolved until the deploy runs, so Second updates in place.
+ */
+const pair = (
+  firstRedirectUri: string,
+  second: Pick<IdentityHub.ClientProps, "issuer" | "registrationToken"> = props,
+) =>
+  Effect.gen(function* () {
+    const first = yield* IdentityHub.Client("First", { ...props, redirectUri: firstRedirectUri });
+    const client = yield* IdentityHub.Client("Second", {
+      ...props,
+      issuer: second.issuer,
+      registrationToken: second.registrationToken,
+      redirectUri: Output.map(first.clientId, (id) => `${redirectUri}?for=${id}`),
+    });
+    return { first: first.clientId, second: client.clientId, uri: client.redirectUri };
+  });
+
+const moved = "https://brave-lynx-456.convex.site/oauth/hub/callback";
+
+const warningsOf = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+  Effect.gen(function* () {
+    const warnings: unknown[] = [];
+    const capture = Logger.make(({ logLevel, message }) => {
+      if (logLevel === "Warn") warnings.push(message);
+    });
+    const value = yield* effect.pipe(
+      Effect.provide(Logger.layer([capture], { mergeWithExisting: true })),
+    );
+    return { value, warnings };
+  });
+
 afterEach(() => {
+  hubs.clear();
   vi.unstubAllGlobals();
 });
 
@@ -197,28 +234,16 @@ test.provider(
   (stack) =>
     Effect.gen(function* () {
       const hub = fakeHub();
-      // The second client's redirectUri derives from the first client's id, which a replacement
-      // of the first client leaves unresolved until the deploy runs.
-      const pair = (firstRedirectUri: string) =>
-        Effect.gen(function* () {
-          const first = yield* IdentityHub.Client("First", {
-            ...props,
-            redirectUri: firstRedirectUri,
-          });
-          const second = yield* IdentityHub.Client("Second", {
-            ...props,
-            redirectUri: Output.map(first.clientId, (id) => `${redirectUri}?for=${id}`),
-          });
-          return { first: first.clientId, second: second.clientId, uri: second.redirectUri };
-        });
       expect(yield* stack.deploy(pair(redirectUri))).toEqual({
         first: "cl_1",
         second: "cl_2",
         uri: `${redirectUri}?for=cl_1`,
       });
-      expect(
-        yield* stack.deploy(pair("https://brave-lynx-456.convex.site/oauth/hub/callback")),
-      ).toEqual({ first: "cl_3", second: "cl_4", uri: `${redirectUri}?for=cl_3` });
+      expect(yield* stack.deploy(pair(moved))).toEqual({
+        first: "cl_3",
+        second: "cl_4",
+        uri: `${redirectUri}?for=cl_3`,
+      });
       expect(hub.registrations).toHaveLength(4);
       // First is replaced, so its replacement's delete removes cl_1; Second registers in place and
       // removes cl_2 itself.
@@ -440,13 +465,7 @@ test.provider(
       yield* deployClient(stack, props);
       // The token has expired since the deploy.
       const hub = fakeHub({ tokens: [] });
-      const warnings: unknown[] = [];
-      const capture = Logger.make(({ logLevel, message }) => {
-        if (logLevel === "Warn") warnings.push(message);
-      });
-      yield* stack
-        .destroy()
-        .pipe(Effect.provide(Logger.layer([capture], { mergeWithExisting: true })));
+      const { warnings } = yield* warningsOf(stack.destroy());
       // The state is empty: a second destroy makes no request.
       yield* stack.destroy();
       expect(hub.deletions).toEqual([deletion("cl_1")]);
@@ -476,6 +495,10 @@ test.provider(
           },
           "(TypeError, ECONNREFUSED)",
         ],
+        [
+          () => new Response("No matching routes found", { status: 404 }),
+          "the hub has no delete route",
+        ],
       ] as const) {
         const hub = fakeHub();
         yield* deployClient(stack, props);
@@ -494,5 +517,54 @@ test.provider(
         yield* stack.destroy();
         expect(hub.deletions).toEqual([deletion("cl_1"), deletion("cl_1")]);
       }
+    }),
+);
+
+test.provider(
+  "an in-place re-registration at another hub deletes the old client at the old hub with the old token",
+  (stack) =>
+    Effect.gen(function* () {
+      const hubA = fakeHub();
+      const b = fakeHub({ origin: hubB, tokens: [tokenB] });
+      yield* stack.deploy(pair(redirectUri));
+      expect(
+        yield* stack.deploy(
+          pair(moved, { issuer: hubB, registrationToken: Redacted.make(tokenB) }),
+        ),
+      ).toMatchObject({ second: "cl_1" });
+      expect(b.registrations).toHaveLength(1);
+      expect(b.deletions).toEqual([]);
+      // First's replacement deletes cl_1; Second's old client, cl_2, goes with hub A's token.
+      expect(hubA.deletions.sort((x, y) => x.url.localeCompare(y.url))).toEqual([
+        deletion("cl_1"),
+        deletion("cl_2"),
+      ]);
+    }),
+);
+
+test.provider(
+  "an in-place re-registration keeps the new client when the old client's delete fails, and warns",
+  (stack) =>
+    Effect.gen(function* () {
+      fakeHub();
+      const b = fakeHub({ origin: hubB, tokens: [tokenB] });
+      const atB = { issuer: hubB, registrationToken: Redacted.make(tokenB) };
+      expect(yield* stack.deploy(pair(redirectUri, atB))).toMatchObject({ second: "cl_1" });
+      b.deleteAnswer = () => new Response(`Internal error near Bearer ${tokenB}`, { status: 500 });
+      const { value, warnings } = yield* warningsOf(stack.deploy(pair(moved, atB)));
+      expect(value).toMatchObject({ second: "cl_2" });
+      expect(b.deletions).toEqual([deletion("cl_1", tokenB, hubB)]);
+      expect(warnings).toEqual([
+        [
+          expect.stringContaining(
+            `the hub answered 500. Delete it on the hub with \`npx convex run --prod identityBroker:deleteClient '{"clientId":"cl_1"}'\``,
+          ),
+        ],
+      ]);
+      expect(JSON.stringify(warnings)).not.toContain("Internal error");
+      expect(JSON.stringify(warnings)).not.toContain(tokenB);
+      // The state holds the new client: the same props make no request.
+      yield* stack.deploy(pair(moved, atB));
+      expect(b.registrations).toHaveLength(2);
     }),
 );
