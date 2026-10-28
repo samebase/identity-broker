@@ -1,5 +1,12 @@
 import { describe, expect, test } from "vite-plus/test";
-import { createKeySet, KEY_OVERLAP_MS, parseKeySet, publicJwks, rotateKeySet } from "./keys.js";
+import {
+  createKeySet,
+  KEY_OVERLAP_MS,
+  parseKeySet,
+  publicJwks,
+  rotateKeySet,
+  rotateKeySetWithoutOverlap,
+} from "./keys.js";
 
 describe("key set", () => {
   test("create, serialize, parse", async () => {
@@ -25,6 +32,16 @@ describe("key set", () => {
     expect(publicJwks(rotated, now + KEY_OVERLAP_MS + 1).keys).toHaveLength(1);
     const again = await rotateKeySet(rotated, now + KEY_OVERLAP_MS + 1);
     expect(again.keys).toHaveLength(2);
+  });
+
+  test("rotation without overlap keeps the salt and only the new key", async () => {
+    const first = await rotateKeySet(await createKeySet());
+    const replaced = await rotateKeySetWithoutOverlap(first);
+    expect(replaced.pairwiseSalt).toBe(first.pairwiseSalt);
+    expect(replaced.keys.map((key) => key.status)).toEqual(["current"]);
+    const oldKids = first.keys.map((key) => key.kid);
+    expect(oldKids).not.toContain(replaced.keys[0]?.kid);
+    expect(publicJwks(replaced).keys).toHaveLength(1);
   });
 
   test("refuses incomplete sets", async () => {

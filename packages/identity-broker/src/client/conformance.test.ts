@@ -5,7 +5,7 @@ import { createLocalJWKSet, jwtVerify } from "jose";
 import * as client from "openid-client";
 import { afterEach, expect, test, vi } from "vite-plus/test";
 import { createHarness, fakeUpstream, ISSUER, type Harness } from "./harness.test.helper.js";
-import { createKeySet, rotateKeySet, type KeySet } from "./keys.js";
+import { createKeySet, rotateKeySet, rotateKeySetWithoutOverlap, type KeySet } from "./keys.js";
 
 const REDIRECT_URI = "https://app.test/oauth/hub/callback";
 
@@ -118,4 +118,10 @@ test("a token signed before a rotation verifies against the JWKS after it", asyn
     keySet: await rotateKeySet(keySet),
   });
   expect((await verifyWithJwks(rotated, idToken, clientId)).payload.aud).toBe(clientId);
+  // An emergency rotation drops the old key from the JWKS at once.
+  const replaced = await createHarness({
+    connectors: [fakeUpstream().connector],
+    keySet: await rotateKeySetWithoutOverlap(keySet),
+  });
+  await expect(verifyWithJwks(replaced, idToken, clientId)).rejects.toThrow();
 });
