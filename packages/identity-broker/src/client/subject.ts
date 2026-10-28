@@ -22,7 +22,7 @@ export async function sha256Hex(input: string): Promise<string> {
 }
 
 /** URL-safe random token of `bytes` random bytes. */
-export function randomToken(bytes = 32): string {
+export function randomToken(bytes: number): string {
   const buffer = new Uint8Array(bytes);
   crypto.getRandomValues(buffer);
   return btoa(String.fromCharCode(...buffer))

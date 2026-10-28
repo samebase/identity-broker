@@ -2,7 +2,6 @@ import { createLocalJWKSet, jwtVerify, SignJWT } from "jose";
 import {
   currentKey,
   ID_TOKEN_TTL_SECONDS,
-  importSigningKey,
   publicJwks,
   SIGNING_ALGORITHM,
   type KeySet,
@@ -29,7 +28,8 @@ export async function signIdToken(args: {
   claims: IdentityClaims;
   nonce: string | undefined;
 }): Promise<string> {
-  const { kid, key } = await importSigningKey(args.keySet);
+  // jose imports the private JWK for RS256, the algorithm of the header.
+  const { kid, privateJwk } = currentKey(args.keySet);
   return await new SignJWT({
     ...args.claims,
     ...(args.nonce === undefined ? {} : { nonce: args.nonce }),
@@ -39,7 +39,7 @@ export async function signIdToken(args: {
     .setAudience(args.clientId)
     .setIssuedAt()
     .setExpirationTime(`${ID_TOKEN_TTL_SECONDS}s`)
-    .sign(key);
+    .sign(privateJwk);
 }
 
 function reason(error: unknown): string {

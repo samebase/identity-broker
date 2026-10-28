@@ -1,7 +1,7 @@
 // An OIDC connector against a fake provider: discovery, PKCE, and the state, nonce and claims of the
 // id_token, which oauth4webapi checks. It does not check the id_token's signature: the token comes
 // from the token endpoint over TLS.
-import { exportJWK, generateKeyPair, SignJWT } from "jose";
+import { generateKeyPair, SignJWT } from "jose";
 import { afterEach, expect, test, vi } from "vite-plus/test";
 import type { OidcConnector } from "./types.js";
 import { finishUpstream, startUpstream } from "./upstream.js";
@@ -18,8 +18,7 @@ afterEach(() => {
  * provider echoes the nonce of the authorization request it saw.
  */
 async function fakeProvider() {
-  const { privateKey, publicKey } = await generateKeyPair("RS256");
-  const jwk = { ...(await exportJWK(publicKey)), kid: "k1", alg: "RS256", use: "sig" };
+  const { privateKey } = await generateKeyPair("RS256");
   let nonce: string | undefined;
   vi.stubGlobal(
     "fetch",
@@ -31,16 +30,11 @@ async function fakeProvider() {
           issuer: ISSUER,
           authorization_endpoint: `${ISSUER}/authorize`,
           token_endpoint: `${ISSUER}/token`,
-          jwks_uri: `${ISSUER}/jwks`,
-          userinfo_endpoint: `${ISSUER}/userinfo`,
           response_types_supported: ["code"],
           subject_types_supported: ["public"],
           id_token_signing_alg_values_supported: ["RS256"],
           code_challenge_methods_supported: ["S256"],
         });
-      }
-      if (url.pathname === "/jwks") {
-        return Response.json({ keys: [jwk] });
       }
       if (url.pathname === "/token") {
         const body = new URLSearchParams(await request.text());

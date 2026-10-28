@@ -1,4 +1,4 @@
-import { exportJWK, generateKeyPair, importJWK, type CryptoKey, type JWK } from "jose";
+import { exportJWK, generateKeyPair, type JWK } from "jose";
 import { asRecord } from "./protocol.js";
 import { randomToken } from "./subject.js";
 
@@ -76,8 +76,9 @@ export async function rotateKeySet(keySet: KeySet, now = Date.now()): Promise<Ke
 }
 
 /**
- * Rotation after a key compromise: a new current key and no retired keys, so every token signed
- * before stops verifying at once. The salt never changes.
+ * Rotation after a key compromise: a new current key and no retired keys, so the JWKS stops
+ * publishing the old keys at once. A verifier that cached the JWKS accepts their tokens until its
+ * copy expires. The salt never changes.
  */
 export async function rotateKeySetWithoutOverlap(keySet: KeySet): Promise<KeySet> {
   const key = await freshKey();
@@ -174,15 +175,6 @@ export function currentKey(keySet: KeySet): { kid: string; privateJwk: JWK } {
     throw new Error("The key set has no current key");
   }
   return { kid: key.kid, privateJwk: key.privateJwk };
-}
-
-export async function importSigningKey(keySet: KeySet): Promise<{ kid: string; key: CryptoKey }> {
-  const { kid, privateJwk } = currentKey(keySet);
-  const key = await importJWK(privateJwk, SIGNING_ALGORITHM);
-  if (typeof key === "string" || !("type" in key)) {
-    throw new Error("The current key is not an asymmetric key");
-  }
-  return { kid, key };
 }
 
 /**
