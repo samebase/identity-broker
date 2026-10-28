@@ -39,16 +39,16 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "jose": "catalog:",
-    "oauth4webapi": "catalog:"
+    "jose": "6.2.13",
+    "oauth4webapi": "3.8.8"
   },
   "devDependencies": {
-    "@types/node": "catalog:",
-    "convex": "catalog:",
-    "convex-test": "catalog:",
-    "openid-client": "catalog:",
-    "typescript": "catalog:",
-    "vite-plus": "catalog:"
+    "@types/node": "24.19.2",
+    "convex": "1.47.0",
+    "convex-test": "0.0.61",
+    "openid-client": "6.8.8",
+    "typescript": "7.0.2",
+    "vite-plus": "1.3.0"
   },
   "peerDependencies": {
     "convex": "^1.47.0"
