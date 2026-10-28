@@ -14,7 +14,7 @@ import * as Convex from "@samebase/alchemy-convex";
 // In the stack's generator. Its providers: Layer.mergeAll(Convex.providers(), IdentityHub.providers())
 const client = yield* IdentityHub.Client("HubClient", {
   issuer: "https://secret-chickadee-10.convex.site",
-  registrationToken: yield* Config.redacted("HUB_REGISTRATION_TOKEN"),
+  registrationToken: yield* Config.Redacted("HUB_REGISTRATION_TOKEN"),
   redirectUri: Output.map(deployment.siteUrl, (url) => `${url}/oauth/hub/callback`),
   deploymentType: "preview",
   clientName: "Bristol preview",
@@ -24,34 +24,62 @@ yield* Convex.EnvironmentVariable("HubClientId", { deployment: deployment.name, 
 yield* Convex.EnvironmentVariable("HubClientSecret", { deployment: deployment.name, deployKey: key.deployKey, name: "HUB_CLIENT_SECRET", value: client.clientSecret });
 ```
 
-The attributes are `issuer` (without a trailing slash), `redirectUri`, `deploymentType`,
-`clientName`, `clientId`, and `clientSecret` (Redacted). The registration token is never an
-attribute. Peer dependencies: `alchemy` `2.0.0-beta.80` and `effect` `^4.0.0`.
+The attributes are `issuer`, `redirectUri`, `deploymentType`, `clientName`, `clientId`, and
+`clientSecret` (Redacted). `issuer` is normalized as the hub normalizes its own: origin plus path,
+without a trailing slash, so `https://HUB.EXAMPLE:443/` is `https://hub.example`. It must be an
+`https` URL, or `http` on `127.0.0.1` or `localhost`, without credentials, query, or fragment. The
+registration token is never an attribute.
+
+Alchemy state stores the props, the registration token included, and the attributes, the client
+secret included. Redacted keeps the token and the secret out of logs; how the state is encrypted is
+up to the state store. Peer dependencies: `alchemy` `2.0.0-beta.80` and `effect` `^4.0.0`.
 
 ## Lifecycle
 
 The hub implements RFC 7591 registration only. It has no endpoint to read, change, or delete a
 client.
 
-- First deploy: `POST <issuer>/register` with the token as a Bearer token.
-- A changed `issuer`, `redirectUri`, or `deploymentType` replaces the resource: a new client is
-  registered. The old client stays on the hub, which removes a preview client after 30 days without
-  a sign-in and keeps a production or development client until the app is deleted there.
+- First deploy: `POST <issuer>/register` with the token as a Bearer token. The request times out
+  after 15 seconds and does not follow redirects.
+- A changed normalized `issuer`, `redirectUri`, or `deploymentType` replaces the resource: a new
+  client is registered. The old client stays on the hub, which removes a preview client after 30
+  days without a sign-in and keeps a production or development client until the app is deleted
+  there.
 - A changed `clientName`, `softwareVersion`, or `registrationToken` makes no hub call and keeps the
   attributes. The token is used only to register.
 - Read returns the state as it is. Destroy makes no hub call and logs that the client stays.
-- A registration is never retried, because each successful request creates a client.
+- Within one deploy, a registration is never retried, because each successful request creates a
+  client.
+
+## Limits
+
+- The hub removes a preview client after 30 days without a sign-in. A preview that is redeployed
+  after that long keeps a client in its state that the hub no longer has. To recover, run
+  `alchemy destroy --stage <stage>`, then deploy.
+- A deploy that fails after the hub created the client and before Alchemy saved the client to state
+  leaves that client on the hub. The next deploy registers another client.
+- Two separate `Convex.EnvironmentVariable` resources write the client id and the client secret. A
+  failure between the two writes can leave a mismatched pair on the deployment until the next
+  deploy.
 
 ## Errors
 
+- `InvalidProps`: a prop failed a check before any request: `issuer` is not an allowed URL, or
+  `issuer` or `registrationToken` contains a control character. The message names the prop, not its
+  value.
 - `RegistrationTokenRejected`: the hub answered 401, so the token is expired or wrong. Mint a new
   one on the hub with `npx convex run --prod identityBroker:mintRegistrationToken` (an
   `expiresInDays` argument sets its lifetime).
 - `RegistrationRejected`: the hub answered 400 with an OAuth error, such as `invalid_redirect_uri`
-  for a host the app does not allow (`identityBroker:setAllowedCallbackHosts` on the hub).
-- `RegistrationFailed`: the hub could not be reached or gave another answer. Check `issuer`.
+  for a host the app does not allow (`identityBroker:setAllowedCallbackHosts` on the hub). The
+  message keeps the error code and the hub's description as one line of at most 200 printable
+  characters.
+- `RegistrationFailed`: the hub could not be reached within 15 seconds, redirected, or gave another
+  answer. The message carries only the status, or the error name and code, such as `ECONNREFUSED`.
+  Check `issuer`.
 
-No message or log line contains the token, the client secret, or the body of a 401 answer.
+No message or log line contains the token, the client secret, or a body from the hub other than the
+OAuth error of a 400 answer.
 
 ## License
 

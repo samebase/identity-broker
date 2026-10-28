@@ -21,21 +21,24 @@ const props = {
 
 /**
  * A hub behind a stubbed fetch. POST <issuer>/register answers as the `register` handler of
- * @samebase/identity-broker does: 401 for an unknown token, 201 with the client otherwise.
+ * @samebase/identity-broker does: 401 for an unknown token, 201 with the client otherwise. `answer`
+ * replaces the answer to a request with a valid token.
  */
-const fakeHub = () => {
-  const requests: { url: string; authorization: string | null; body: unknown }[] = [];
+const fakeHub = (options: { origin?: string; answer?: () => Response } = {}) => {
+  const requests: { url: string; authorization: string | null; redirect: string; body: unknown }[] =
+    [];
   vi.stubGlobal(
     "fetch",
     vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const request = new Request(input, init);
-      if (request.method !== "POST" || request.url !== `${issuer}/register`) {
+      if (request.method !== "POST" || request.url !== `${options.origin ?? issuer}/register`) {
         return new Response("No matching routes found", { status: 404 });
       }
       const body: unknown = await request.json();
       requests.push({
         url: request.url,
         authorization: request.headers.get("authorization"),
+        redirect: request.redirect,
         body,
       });
       if (request.headers.get("authorization") !== `Bearer ${token}`) {
@@ -47,6 +50,7 @@ const fakeHub = () => {
           { status: 401 },
         );
       }
+      if (options.answer !== undefined) return options.answer();
       return Response.json(
         {
           client_id: `cl_${requests.length}`,
@@ -91,6 +95,7 @@ test.provider("the first deploy registers the deployment and outputs the client"
       {
         url: `${issuer}/register`,
         authorization: `Bearer ${token}`,
+        redirect: "error",
         body: {
           redirect_uris: [redirectUri],
           client_name: "Bristol preview",
@@ -202,6 +207,124 @@ test.provider("a rejected registration token fails with a message that names the
     expect(error.message).toContain("identityBroker:mintRegistrationToken");
     expect(error.message).not.toContain(expired);
     expect(error.message).not.toContain("unknown or expired");
+  }),
+);
+
+test.provider("the issuer is normalized as the hub normalizes its own", (stack) =>
+  Effect.gen(function* () {
+    const requests = fakeHub({ origin: "https://hub.example" });
+    const client = yield* deployClient(stack, { ...props, issuer: "https://HUB.EXAMPLE:443/" });
+    expect(client.issuer).toBe("https://hub.example");
+    expect(requests.map((request) => request.url)).toEqual(["https://hub.example/register"]);
+    // The same normalized issuer is no change.
+    yield* deployClient(stack, { ...props, issuer: "https://hub.example" });
+    expect(requests).toHaveLength(1);
+  }),
+);
+
+test.provider("an issuer with credentials, a query, or plain http is refused locally", (stack) =>
+  Effect.gen(function* () {
+    const requests = fakeHub();
+    for (const [bad, reason] of [
+      ["https://user:pass@hub.example", "credentials"],
+      ["https://hub.example/?x=1", "a query"],
+      ["https://hub.example/#x", "a fragment"],
+      ["http://hub.example", "https"],
+      ["https://hub.example/\n", "control character"],
+    ] as const) {
+      const error = yield* Effect.flip(deployClient(stack, { ...props, issuer: bad }));
+      expect(error).toBeInstanceOf(IdentityHub.InvalidProps);
+      expect(error.message).toContain(reason);
+      expect(error.message).not.toContain("pass");
+      expect(error.message).not.toContain(token);
+    }
+    expect(requests).toHaveLength(0);
+    fakeHub({ origin: "http://localhost:3211" });
+    const local = yield* deployClient(stack, { ...props, issuer: "http://localhost:3211" });
+    expect(local.issuer).toBe("http://localhost:3211");
+  }),
+);
+
+test.provider("a registration token with a newline is refused before any request", (stack) =>
+  Effect.gen(function* () {
+    const requests = fakeHub();
+    const broken = `${token}\nX-Injected: 1`;
+    const error = yield* Effect.flip(
+      deployClient(stack, { ...props, registrationToken: Redacted.make(broken) }),
+    );
+    expect(requests).toHaveLength(0);
+    expect(error).toBeInstanceOf(IdentityHub.InvalidProps);
+    expect(error.message).toContain("registrationToken");
+    expect(error.message).not.toContain(token);
+  }),
+);
+
+test.provider("a failed request reports the error name and code, not its message", (stack) =>
+  Effect.gen(function* () {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        throw new TypeError(`fetch failed for Bearer ${token}`, {
+          cause: Object.assign(new Error(`connect ECONNREFUSED, Bearer ${token}`), {
+            code: "ECONNREFUSED",
+          }),
+        });
+      }),
+    );
+    const error = yield* Effect.flip(deployClient(stack, props));
+    expect(error).toBeInstanceOf(IdentityHub.RegistrationFailed);
+    expect(error.message).toContain("(TypeError, ECONNREFUSED)");
+    expect(error.message).not.toContain(token);
+  }),
+);
+
+test.provider("a 500 fails with the status alone", (stack) =>
+  Effect.gen(function* () {
+    const requests = fakeHub({
+      answer: () => new Response(`Internal error near Bearer ${token}`, { status: 500 }),
+    });
+    const error = yield* Effect.flip(deployClient(stack, props));
+    expect(requests).toHaveLength(1);
+    expect(error).toBeInstanceOf(IdentityHub.RegistrationFailed);
+    expect(error.message).toContain("the hub answered 500");
+    expect(error.message).not.toContain("Internal error");
+    expect(error.message).not.toContain(token);
+  }),
+);
+
+test.provider("a 201 with an empty client_secret fails", (stack) =>
+  Effect.gen(function* () {
+    fakeHub({
+      answer: () => Response.json({ client_id: "cl_1", client_secret: "" }, { status: 201 }),
+    });
+    const error = yield* Effect.flip(deployClient(stack, props));
+    expect(error).toBeInstanceOf(IdentityHub.RegistrationFailed);
+    expect(error.message).toContain("201");
+    expect(error.message).not.toContain(token);
+  }),
+);
+
+test.provider("a 400 description becomes one line of at most 200 characters", (stack) =>
+  Effect.gen(function* () {
+    fakeHub({
+      answer: () =>
+        Response.json(
+          {
+            error: "invalid_redirect_uri",
+            error_description: `The host is not allowed.\r\n\u001b[31mForged log line\u001b[0m\n${"x".repeat(300)}`,
+          },
+          { status: 400 },
+        ),
+    });
+    const error = yield* Effect.flip(deployClient(stack, props));
+    if (!(error instanceof IdentityHub.RegistrationRejected)) {
+      return expect.unreachable(`expected RegistrationRejected, got ${error._tag}`);
+    }
+    expect(error.code).toBe("invalid_redirect_uri");
+    expect(error.description).toMatch(/^The host is not allowed\. \[31mForged log line \[0m x+$/);
+    expect(error.description).toHaveLength(200);
+    expect(error.message).not.toMatch(/\p{Cc}/u);
+    expect(error.message).not.toContain(token);
   }),
 );
 
