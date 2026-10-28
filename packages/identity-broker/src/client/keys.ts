@@ -205,12 +205,18 @@ export async function importSigningKey(keySet: KeySet): Promise<{ kid: string; k
   return { kid, key };
 }
 
-/** The public JWKS: the current key and the retired keys still inside the overlap window. */
-export function publicJwks(keySet: KeySet, now = Date.now()): { keys: JWK[] } {
+/**
+ * The public JWKS: the current key and the retired keys still inside the overlap window, each under
+ * its entry's kid, the kid the signer writes into a token header, whatever kid its JWK carries.
+ */
+export function publicJwks(
+  keySet: KeySet,
+  now = Date.now(),
+): { keys: Array<JWK & { kid: string }> } {
   return {
     keys: keySet.keys.flatMap((entry) => {
       if (entry.status === "current") {
-        return [publicHalf(entry.privateJwk)];
+        return [{ ...publicHalf(entry.privateJwk), kid: entry.kid }];
       }
       return entry.retiredAt + KEY_OVERLAP_MS > now ? [{ ...entry.publicJwk, kid: entry.kid }] : [];
     }),

@@ -1,5 +1,6 @@
+import { createLocalJWKSet, decodeProtectedHeader, jwtVerify } from "jose";
 import { describe, expect, test } from "vite-plus/test";
-import { assertKeySetUsable } from "./jwt.js";
+import { assertKeySetUsable, signIdToken } from "./jwt.js";
 import {
   createKeySet,
   currentKey,
@@ -182,14 +183,27 @@ describe("key set validation", () => {
     );
   });
 
-  test("a current key whose JWK names another kid than its entry fails at verification", async () => {
+  test("the JWKS publishes the current key under its entry's kid, so a token signed with it verifies", async () => {
     const keySet = await createKeySet();
     const { kid, privateJwk } = currentKey(keySet);
     const parsed = parseKeySet(withPrivateJwk(keySet, { ...privateJwk, kid: "another-kid" }));
-    expect(publicJwks(parsed).keys.map((jwk) => jwk.kid)).toEqual(["another-kid"]);
-    await expect(assertKeySetUsable(parsed)).rejects.toThrow(
-      `IDENTITY_BROKER_KEYS key "${kid}" fails at verify`,
-    );
+    expect(publicJwks(parsed).keys.map((jwk) => jwk.kid)).toEqual([kid]);
+    const token = await signIdToken({
+      keySet: parsed,
+      issuer: "https://auth.test",
+      clientId: "cl_test",
+      claims: { sub: "s", connector: "fake" },
+      authTime: Date.now(),
+      nonce: undefined,
+    });
+    expect(decodeProtectedHeader(token).kid).toBe(kid);
+    await expect(
+      jwtVerify(token, createLocalJWKSet(publicJwks(parsed)), {
+        issuer: "https://auth.test",
+        audience: "cl_test",
+      }),
+    ).resolves.toMatchObject({ payload: { sub: "s" } });
+    await expect(assertKeySetUsable(parsed)).resolves.toBeUndefined();
   });
 
   test("a key the JWKS publishes for another algorithm fails at verification, current or retired", async () => {

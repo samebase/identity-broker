@@ -106,8 +106,8 @@ function reason(error: unknown): string {
  * Proves a key set the way the broker uses it: an id_token from `signIdToken` must verify against
  * the JWKS that /.well-known/jwks.json publishes, its key found by kid, and each retired key there
  * must resolve as a relying party resolves it. `parseKeySet` checks only the shape, so it passes an
- * RSA key under the 2048 bits RS256 needs and a current key whose JWK names another kid than its
- * entry. For `identity-broker keys`; the host reads its keys per request and skips this.
+ * RSA key under the 2048 bits RS256 needs. For `identity-broker keys`; the host reads its keys per
+ * request and skips this.
  */
 export async function assertKeySetUsable(keySet: KeySet): Promise<void> {
   const { kid } = currentKey(keySet);
@@ -133,8 +133,8 @@ export async function assertKeySetUsable(keySet: KeySet): Promise<void> {
     throw new Error(`IDENTITY_BROKER_KEYS key "${kid}" fails at verify: ${reason(error)}`);
   }
   for (const { kid: published } of document.keys) {
-    // The current key verified above; a current JWK without kid already failed there.
-    if (published !== undefined && published !== kid) {
+    // The current key verified above.
+    if (published !== kid) {
       try {
         await jwks({ alg: SIGNING_ALGORITHM, kid: published });
       } catch (error) {

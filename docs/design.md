@@ -69,8 +69,9 @@ the key set: a lost salt cannot be recreated.
 
 `IDENTITY_BROKER_KEYS` holds one current RS256 private key, the public halves of retired keys with
 their retirement time, and the salt. The host parses it in each request and refuses a salt shorter
-than 16 bytes or a key without its RSA members. `keys --rotate` also signs a test id_token with the
+than 16 bytes or a key without its RSA members. The JWKS publishes each key under its entry's kid,
+the kid the signer writes into a token header. `keys --rotate` also signs a test id_token with the
 current key and verifies it against the JWKS the broker publishes, which catches an RSA key under
-the 2048 bits RS256 needs and a JWK whose kid differs from its entry. `keys --rotate` keeps the
-retired public key in the JWKS for 14 days. After a key compromise, `keys --rotate --no-overlap`
-drops the retired keys at once, so every token signed before stops verifying; the salt is kept.
+the 2048 bits RS256 needs. `keys --rotate` keeps the retired public key in the JWKS for 14 days.
+After a key compromise, `keys --rotate --no-overlap` drops the retired keys at once, so every token
+signed before stops verifying; the salt is kept.
