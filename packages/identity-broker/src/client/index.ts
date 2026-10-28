@@ -63,11 +63,6 @@ export type IdentityBrokerConfig = {
   /** The content of `IDENTITY_BROKER_KEYS`, read in the request. */
   keys: () => string | undefined;
   connectors: Connector[];
-  /**
-   * Days without a sign-in after which `cleanup` deletes a preview client. Absent: `cleanup` deletes
-   * no client, because a deployment whose client was deleted does not register again by itself.
-   */
-  previewClientIdleDays?: number;
 };
 
 /** A request lives this long from /authorize to the code redirect. */
@@ -76,8 +71,6 @@ const AUTH_REQUEST_TTL_MS = 10 * 60 * 1000;
 const CODE_TTL_MS = 60 * 1000;
 /** The scopes the broker grants; any other requested scope is dropped. */
 const SCOPES = ["openid", "email", "profile"];
-/** How long `cleanup` keeps an audit row of an issued id_token. */
-export const SIGN_IN_RETENTION_MS = 90 * 24 * 60 * 60 * 1000;
 
 type Ctx = GenericActionCtx<GenericDataModel>;
 
@@ -96,11 +89,6 @@ export function defineIdentityBroker(config: IdentityBrokerConfig) {
   }
   if (connectors.size === 0) {
     throw new Error("At least one connector is required");
-  }
-  const { previewClientIdleDays } = config;
-  // Zero or less would delete every preview client at the next cleanup.
-  if (previewClientIdleDays !== undefined && !(previewClientIdleDays > 0)) {
-    throw new Error("previewClientIdleDays must be a positive number of days");
   }
 
   const keySet = (): KeySet => parseKeySet(config.keys());
@@ -352,10 +340,6 @@ export function defineIdentityBroker(config: IdentityBrokerConfig) {
       secretHash: await sha256Hex(clientSecret),
       tokenEndpointAuthMethod: validation.value.tokenEndpointAuthMethod,
       redirectUri: validation.value.redirectUri,
-      deploymentType: validation.value.deploymentType,
-      clientName: validation.value.clientName,
-      softwareVersion: validation.value.softwareVersion,
-      createdAt: now,
     });
     return json(
       {
@@ -364,10 +348,7 @@ export function defineIdentityBroker(config: IdentityBrokerConfig) {
         client_id_issued_at: Math.floor(now / 1000),
         client_secret_expires_at: 0,
         redirect_uris: [validation.value.redirectUri],
-        client_name: validation.value.clientName,
         software_id: app.appId,
-        software_version: validation.value.softwareVersion,
-        deployment_type: validation.value.deploymentType,
         token_endpoint_auth_method: validation.value.tokenEndpointAuthMethod,
         grant_types: ["authorization_code"],
         response_types: ["code"],
@@ -379,9 +360,8 @@ export function defineIdentityBroker(config: IdentityBrokerConfig) {
   const registerPrefix = path("/register/");
 
   /**
-   * `DELETE <prefix>/register/<client_id>` deletes a client of the token's app, of any deployment
-   * type. The segment is compared as sent: `/register` issues `cl_` and base64url, which a path
-   * carries as is. A client that is gone and a client of another app both answer 404, never 403,
+   * `DELETE <prefix>/register/<client_id>` deletes a client of the token's app. The segment is
+   * compared as sent: `/register` issues `cl_` and base64url, which a path carries as is. A client that is gone and a client of another app both answer 404, never 403,
    * so a token learns nothing about another app's clients.
    */
   const unregister = httpActionGeneric(async (ctx, request) => {
@@ -483,13 +463,6 @@ export function defineIdentityBroker(config: IdentityBrokerConfig) {
       }),
       signAccessToken({ keySet: keys, issuer, clientId: client.clientId, claims }),
     ]);
-    await ctx.runMutation(component.signIns.record, {
-      appId: exchange.appId,
-      clientId: client.clientId,
-      connector: exchange.identity.connector,
-      sub,
-      at: now,
-    });
     return json({
       access_token: accessToken,
       token_type: "Bearer",
@@ -631,14 +604,11 @@ export function defineIdentityBroker(config: IdentityBrokerConfig) {
         }),
         cleanup: internalMutationGeneric({
           args: {},
-          handler: async (ctx) =>
-            await ctx.runMutation(component.lifecycle.cleanup, {
-              now: Date.now(),
-              ...(previewClientIdleDays === undefined
-                ? {}
-                : { previewClientMaxAgeMs: previewClientIdleDays * 24 * 60 * 60 * 1000 }),
-              signInRetentionMs: SIGN_IN_RETENTION_MS,
-            }),
+          returns: v.null(),
+          handler: async (ctx) => {
+            await ctx.runMutation(component.lifecycle.cleanup, { now: Date.now() });
+            return null;
+          },
         }),
       };
     },

@@ -16,9 +16,6 @@ const props = {
   issuer: `${issuer}/`,
   registrationToken: Redacted.make(token),
   redirectUri,
-  deploymentType: "preview",
-  clientName: "Bristol preview",
-  softwareVersion: "happy-otter-123",
 } satisfies IdentityHub.ClientProps;
 
 type SeenRequest = { url: string; authorization: string | null; redirect: string };
@@ -83,10 +80,7 @@ const fakeHub = (
         client_id_issued_at: 1793174400,
         client_secret_expires_at: 0,
         redirect_uris: [redirectUri],
-        client_name: "Bristol preview",
-        software_id: "bristol-ab12c",
-        software_version: "happy-otter-123",
-        deployment_type: "preview",
+        software_id: "bristol",
         token_endpoint_auth_method: "client_secret_post",
         grant_types: ["authorization_code"],
         response_types: ["code"],
@@ -175,9 +169,6 @@ test.provider("the first deploy registers the deployment and outputs the client"
         redirect: "error",
         body: {
           redirect_uris: [redirectUri],
-          client_name: "Bristol preview",
-          software_version: "happy-otter-123",
-          deployment_type: "preview",
           token_endpoint_auth_method: "client_secret_post",
         },
       },
@@ -185,8 +176,6 @@ test.provider("the first deploy registers the deployment and outputs the client"
     expect(client).toMatchObject({
       issuer,
       redirectUri,
-      deploymentType: "preview",
-      clientName: "Bristol preview",
       clientId: "cl_1",
       clientSecret: "secret-1",
     });
@@ -255,7 +244,7 @@ test.provider(
 );
 
 test.provider(
-  "a changed clientName, softwareVersion, or registrationToken makes no request, and destroy sends the newest token",
+  "a changed registrationToken makes no request, and destroy sends the newest token",
   (stack) =>
     Effect.gen(function* () {
       const rotated = "rt_another-token";
@@ -263,8 +252,6 @@ test.provider(
       const first = yield* deployClient(stack, props);
       const second = yield* deployClient(stack, {
         ...props,
-        clientName: "Bristol review",
-        softwareVersion: "happy-otter-124",
         registrationToken: Redacted.make(rotated),
       });
       expect(hub.registrations).toHaveLength(1);

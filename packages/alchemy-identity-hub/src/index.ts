@@ -6,8 +6,6 @@ import * as Layer from "effect/Layer";
 import * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
 
-export type DeploymentType = "production" | "development" | "preview";
-
 export interface ClientProps {
   /**
    * The hub's issuer URL, such as `https://secret-chickadee-10.convex.site`. Normalized as the hub
@@ -21,20 +19,12 @@ export interface ClientProps {
   readonly registrationToken: Redacted.Redacted<string>;
   /** The deployment's callback URL, such as `<deployment site URL>/oauth/hub/callback`. */
   readonly redirectUri: string;
-  readonly deploymentType: DeploymentType;
-  /** The name the hub records for the client. */
-  readonly clientName: string;
-  /** Recorded on the hub's client, such as the deployment name. The hub records "unknown" without it. */
-  readonly softwareVersion?: string;
 }
 
 export interface ClientAttributes {
   /** The normalized issuer: origin plus path, without a trailing slash. */
   readonly issuer: string;
   readonly redirectUri: string;
-  readonly deploymentType: DeploymentType;
-  /** The name the client was registered with. */
-  readonly clientName: string;
   readonly clientId: string;
   /** Returned by the hub only at registration. */
   readonly clientSecret: Redacted.Redacted<string>;
@@ -75,7 +65,7 @@ export class RegistrationTokenRejected extends Schema.TaggedError<RegistrationTo
 const REJECTIONS = {
   invalid_redirect_uri: `the app does not allow the host of redirectUri (invalid_redirect_uri). Fix redirectUri, or allow its host for the app on the hub with \`npx convex run --prod identityBroker:setAllowedCallbackHosts '{"appId":"<app id>","allowedCallbackHosts":[...]}'\`, which replaces the list.`,
   invalid_client_metadata:
-    "the hub refused the client metadata (invalid_client_metadata). Check clientName, softwareVersion, and deploymentType.",
+    "the hub refused the client metadata (invalid_client_metadata). Check that the hub runs @samebase/identity-broker 0.6.0 or later.",
   invalid_request:
     "the hub found the registration request malformed (invalid_request). Check that issuer is the hub's issuer URL.",
   invalid_token: `the hub rejected the registration token (invalid_token). Mint a new one on the hub with \`npx convex run --prod identityBroker:mintRegistrationToken '{"appId":"<app id>"}'\` and pass it as registrationToken.`,
@@ -183,11 +173,9 @@ const requestFailure = (cause: unknown) => {
   return `the request failed (${name}${code})`;
 };
 
-/** True when the client in state was registered for `issuer` and the redirect URI and deployment type of `props`. */
+/** True when the client in state was registered for `issuer` and the redirect URI of `props`. */
 const registeredFor = (output: ClientAttributes, issuer: string, props: ClientProps) =>
-  output.issuer === issuer &&
-  output.redirectUri === props.redirectUri &&
-  output.deploymentType === props.deploymentType;
+  output.issuer === issuer && output.redirectUri === props.redirectUri;
 
 /**
  * One registration. The token goes only into the request header. An error carries local
@@ -205,9 +193,6 @@ const register = (issuer: string, token: string, props: ClientProps) =>
           },
           body: JSON.stringify({
             redirect_uris: [props.redirectUri],
-            client_name: props.clientName,
-            software_version: props.softwareVersion,
-            deployment_type: props.deploymentType,
             // Convex Auth's generic OAuth method posts the client credentials in the body; the
             // RFC 7591 default is client_secret_basic.
             token_endpoint_auth_method: "client_secret_post",
@@ -329,8 +314,6 @@ const ClientProvider = Provider.succeed(Client, {
     return {
       issuer,
       redirectUri: news.redirectUri,
-      deploymentType: news.deploymentType,
-      clientName: news.clientName,
       clientId,
       clientSecret,
     };

@@ -14,7 +14,6 @@ import type * as clients from "../clients.js";
 import type * as crypto from "../crypto.js";
 import type * as lifecycle from "../lifecycle.js";
 import type * as registration from "../registration.js";
-import type * as signIns from "../signIns.js";
 
 import type {
   ApiFromModules,
@@ -30,7 +29,6 @@ const fullApi: ApiFromModules<{
   crypto: typeof crypto;
   lifecycle: typeof lifecycle;
   registration: typeof registration;
-  signIns: typeof signIns;
 }> = anyApi as any;
 
 /**

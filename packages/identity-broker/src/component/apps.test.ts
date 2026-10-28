@@ -14,10 +14,6 @@ const client = (appId: string, clientId: string) => ({
   secretHash: "h",
   tokenEndpointAuthMethod: "client_secret_post" as const,
   redirectUri: "https://app.test/cb",
-  deploymentType: "preview" as const,
-  clientName: "c",
-  softwareVersion: "v",
-  createdAt: now,
 });
 
 async function appWith(

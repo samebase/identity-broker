@@ -35,9 +35,6 @@ describe("redirect URIs", () => {
 describe("registration", () => {
   const good = {
     redirect_uris: ["https://happy-otter-123.convex.site/oauth/hub/callback"],
-    client_name: "Bristol",
-    software_version: "happy-otter-123",
-    deployment_type: "preview",
   };
 
   test("accepts one redirect URI and the extension field; Basic is the default method", () => {
@@ -45,7 +42,6 @@ describe("registration", () => {
     expect(result.ok).toBe(true);
     if (result.ok) {
       expect(result.value.tokenEndpointAuthMethod).toBe("client_secret_basic");
-      expect(result.value.deploymentType).toBe("preview");
     }
     const post = validateRegistration({
       ...good,
@@ -60,7 +56,6 @@ describe("registration", () => {
       redirect_uris: [good.redirect_uris[0], "https://b/c"],
     });
     expect(two.ok).toBe(false);
-    expect(validateRegistration({ ...good, deployment_type: "staging" }).ok).toBe(false);
     expect(validateRegistration({ ...good, grant_types: ["refresh_token"] }).ok).toBe(false);
     expect(validateRegistration({ ...good, token_endpoint_auth_method: "none" }).ok).toBe(false);
     expect(validateRegistration("nope").ok).toBe(false);

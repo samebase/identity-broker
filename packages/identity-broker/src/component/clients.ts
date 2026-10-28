@@ -1,8 +1,8 @@
 import { v } from "convex/values";
 import { mutation, query } from "./_generated/server";
-import { vDeploymentType, vTokenEndpointAuthMethod } from "./schema";
+import { vTokenEndpointAuthMethod } from "./schema";
 
-const { array, boolean, number, object, optional, string } = v;
+const { array, boolean, object, string } = v;
 
 const vClient = object({
   clientId: string(),
@@ -10,11 +10,6 @@ const vClient = object({
   secretHash: string(),
   tokenEndpointAuthMethod: vTokenEndpointAuthMethod,
   redirectUri: string(),
-  deploymentType: vDeploymentType,
-  clientName: string(),
-  softwareVersion: string(),
-  createdAt: number(),
-  lastSignInAt: optional(number()),
 });
 
 /** Registers one deployment of an app as a client with its single exact redirect URI. */
@@ -25,10 +20,6 @@ export const create = mutation({
     secretHash: string(),
     tokenEndpointAuthMethod: vTokenEndpointAuthMethod,
     redirectUri: string(),
-    deploymentType: vDeploymentType,
-    clientName: string(),
-    softwareVersion: string(),
-    createdAt: number(),
   },
   returns: v.null(),
   handler: async (ctx, args) => {
@@ -54,10 +45,6 @@ export const create = mutation({
       secretHash: args.secretHash,
       tokenEndpointAuthMethod: args.tokenEndpointAuthMethod,
       redirectUri: args.redirectUri,
-      deploymentType: args.deploymentType,
-      clientName: args.clientName,
-      softwareVersion: args.softwareVersion,
-      createdAt: args.createdAt,
     });
     return null;
   },
@@ -79,6 +66,7 @@ export const get = query({
   },
 });
 
+/** The clients of one app, oldest first. */
 export const listByApp = query({
   args: { appId: string() },
   returns: array(vClient),
@@ -87,9 +75,7 @@ export const listByApp = query({
       .query("clients")
       .withIndex("by_app_id", (q) => q.eq("appId", args.appId))
       .collect();
-    return clients
-      .map(({ _id, _creationTime, ...fields }) => fields)
-      .sort((a, b) => a.createdAt - b.createdAt || a.clientId.localeCompare(b.clientId));
+    return clients.map(({ _id, _creationTime, ...fields }) => fields);
   },
 });
 

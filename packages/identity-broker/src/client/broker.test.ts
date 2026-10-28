@@ -2,9 +2,7 @@
 import { decodeJwt } from "jose";
 import { afterEach, describe, expect, test, vi } from "vite-plus/test";
 import { api } from "../component/_generated/api.js";
-import { defineIdentityBroker } from "./index.js";
 import {
-  component,
   createHarness,
   fakeUpstream,
   ISSUER,
@@ -127,8 +125,6 @@ describe("registration", () => {
         headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
         body: JSON.stringify({
           redirect_uris: ["https://bristol.example/oauth/hub/callback"],
-          client_name: "prod",
-          deployment_type: "production",
         }),
       });
     expect((await register()).status).toBe(400);
@@ -154,8 +150,6 @@ describe("registration", () => {
       headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
       body: JSON.stringify({
         redirect_uris: [REDIRECT_URI],
-        client_name: "x",
-        deployment_type: "preview",
       }),
     });
     expect(revoked.status).toBe(401);
@@ -174,8 +168,6 @@ describe("registration", () => {
       headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
       body: JSON.stringify({
         redirect_uris: ["https://evil.example/cb"],
-        client_name: "x",
-        deployment_type: "preview",
       }),
     });
     expect(badHost.status).toBe(400);
@@ -221,38 +213,13 @@ describe("registration", () => {
     // A client that is already gone is 404.
     expect((await unregister(bristol.clientId, bristol.token)).status).toBe(404);
   });
-
-  test("DELETE /register/<client_id> deletes a client of any deployment type, under a path issuer too", async () => {
-    for (const issuer of [ISSUER, "https://samebase.test/identity"]) {
-      const h = await createHarness({ connectors: [fakeUpstream().connector], issuer });
-      const { token } = await h.registerClient("bristol");
-      for (const deploymentType of ["production", "development", "preview"]) {
-        const registered = await h.fetchBroker(`${issuer}/register`, {
-          method: "POST",
-          headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-          body: JSON.stringify({
-            redirect_uris: [REDIRECT_URI],
-            client_name: deploymentType,
-            deployment_type: deploymentType,
-          }),
-        });
-        const clientId = String((await registered.json()).client_id);
-        const deleted = await h.fetchBroker(`${issuer}/register/${clientId}`, {
-          method: "DELETE",
-          headers: { Authorization: `Bearer ${token}` },
-        });
-        expect(deleted.status).toBe(204);
-        expect(await h.t.query(api.clients.get, { clientId })).toBeNull();
-      }
-    }
-  });
 });
 
 describe("authorization code flow with an OAuth connector", () => {
   test("a sign-in goes upstream through the named connector and back with a code", async () => {
     const upstream = fakeUpstream();
     const h = await createHarness({ connectors: [upstream.connector] });
-    const { appId, clientId, clientSecret } = await h.registerClient("bristol");
+    const { clientId, clientSecret } = await h.registerClient("bristol");
     const { verifier, challenge } = await pkce();
 
     const back = await completeUpstream(
@@ -292,11 +259,6 @@ describe("authorization code flow with an OAuth connector", () => {
     });
     expect(userinfo.status).toBe(200);
     expect((await userinfo.json()).sub).toBe(claims.sub);
-
-    const signIns = await h.t.run(async (ctx) => await ctx.db.query("signIns").collect());
-    expect(signIns).toHaveLength(1);
-    expect(signIns[0]).toMatchObject({ appId, clientId, connector: "fake", sub: claims.sub });
-    expect(signIns[0]).not.toHaveProperty("email");
 
     // The subject is pairwise per app: another app of the same user gets another subject.
     const other = await h.registerClient("other");
@@ -599,120 +561,6 @@ describe("authorization code flow with an OAuth connector", () => {
 });
 
 describe("cleanup", () => {
-  test("drops expired requests and codes and old audit rows; idle preview clients only when asked", async () => {
-    const h = await createHarness({ connectors: [fakeUpstream().connector] });
-    const now = Date.now();
-    await h.t.mutation(api.apps.create, { appId: "a", allowedCallbackHosts: ["app.test"] });
-    const client = {
-      appId: "a",
-      secretHash: "h",
-      tokenEndpointAuthMethod: "client_secret_post" as const,
-      redirectUri: REDIRECT_URI,
-      clientName: "c",
-      softwareVersion: "v",
-    };
-    await h.t.mutation(api.clients.create, {
-      ...client,
-      clientId: "preview-old",
-      deploymentType: "preview",
-      createdAt: now - 40 * 86_400_000,
-    });
-    await h.t.mutation(api.clients.create, {
-      ...client,
-      clientId: "preview-new",
-      deploymentType: "preview",
-      createdAt: now,
-    });
-    await h.t.mutation(api.clients.create, {
-      ...client,
-      clientId: "prod-old",
-      deploymentType: "production",
-      createdAt: now - 400 * 86_400_000,
-    });
-    await h.t.mutation(api.authRequests.create, {
-      appId: "a",
-      clientId: "prod-old",
-      redirectUri: REDIRECT_URI,
-      scope: "openid",
-      codeChallenge: "c",
-      expiresAt: now - 1,
-      connector: "fake",
-      upstreamStateHash: "old",
-      upstreamCodeVerifier: "v",
-    });
-    await h.t.mutation(api.signIns.record, {
-      appId: "a",
-      clientId: "prod-old",
-      connector: "fake",
-      sub: "s",
-      at: now - 100 * 86_400_000,
-    });
-    const clientIds = async () =>
-      (await h.t.query(api.clients.listByApp, { appId: "a" })).map((c) => c.clientId).sort();
-    // Without previewClientMaxAgeMs, no client goes, however idle.
-    expect(
-      await h.t.mutation(api.lifecycle.cleanup, { now, signInRetentionMs: 90 * 86_400_000 }),
-    ).toEqual({
-      authRequests: 1,
-      previewClients: 0,
-      signIns: 1,
-    });
-    expect(await clientIds()).toEqual(["preview-new", "preview-old", "prod-old"]);
-    // With it, the preview client idle longer goes; the production client stays.
-    expect(
-      await h.t.mutation(api.lifecycle.cleanup, {
-        now,
-        previewClientMaxAgeMs: 30 * 86_400_000,
-        signInRetentionMs: 90 * 86_400_000,
-      }),
-    ).toEqual({
-      authRequests: 0,
-      previewClients: 1,
-      signIns: 0,
-    });
-    expect(await clientIds()).toEqual(["preview-new", "prod-old"]);
-  });
-
-  test("the host's cleanup deletes idle preview clients only with previewClientIdleDays", async () => {
-    for (const previewClientIdleDays of [undefined, 30, 50]) {
-      const h = await createHarness({
-        connectors: [fakeUpstream().connector],
-        ...(previewClientIdleDays === undefined ? {} : { previewClientIdleDays }),
-      });
-      const now = Date.now();
-      await h.t.mutation(api.apps.create, { appId: "a", allowedCallbackHosts: ["app.test"] });
-      await h.t.mutation(api.clients.create, {
-        clientId: "preview-40-days",
-        appId: "a",
-        secretHash: "h",
-        tokenEndpointAuthMethod: "client_secret_post",
-        redirectUri: REDIRECT_URI,
-        deploymentType: "preview",
-        clientName: "c",
-        softwareVersion: "v",
-        createdAt: now - 40 * 86_400_000,
-      });
-      const { cleanup } = h.broker.admin();
-      // @ts-expect-error internalMutationGeneric keeps the function as _handler; RegisteredMutation does not declare it. Its handler only calls ctx.runMutation, which an action ctx has.
-      const counts = await h.t.action(async (ctx) => await cleanup._handler(ctx, {}));
-      expect(counts).toMatchObject({ previewClients: previewClientIdleDays === 30 ? 1 : 0 });
-    }
-  });
-
-  test("previewClientIdleDays must be a positive number of days", () => {
-    for (const previewClientIdleDays of [0, -1, Number.NaN]) {
-      expect(() =>
-        defineIdentityBroker({
-          component,
-          issuer: ISSUER,
-          keys: () => undefined,
-          connectors: [fakeUpstream().connector],
-          previewClientIdleDays,
-        }),
-      ).toThrow("previewClientIdleDays must be a positive number of days");
-    }
-  });
-
   test("one call drains more expired requests than the 51 batches 0.4.0 stopped after", async () => {
     const h = await createHarness({ connectors: [fakeUpstream().connector] });
     vi.useFakeTimers();
@@ -742,7 +590,7 @@ describe("cleanup", () => {
         expiresAt: now + 1,
       });
     });
-    await h.t.mutation(api.lifecycle.cleanup, { now, signInRetentionMs: 90 * 86_400_000 });
+    await h.t.mutation(api.lifecycle.cleanup, { now });
     await h.t.finishAllScheduledFunctions(vi.runAllTimers);
     const left = await h.t.run(async (ctx) => await ctx.db.query("authRequests").collect());
     expect(left.map((row) => row.status === "upstream" && row.upstreamStateHash)).toEqual(["live"]);

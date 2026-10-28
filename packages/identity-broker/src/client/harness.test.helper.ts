@@ -32,7 +32,6 @@ export async function createHarness(options: {
   connectors: Connector[];
   issuer?: string;
   keySet?: KeySet;
-  previewClientIdleDays?: number;
 }) {
   const t = convexTest(schema, modules);
   const keySet = options.keySet ?? (await createKeySet());
@@ -42,9 +41,6 @@ export async function createHarness(options: {
     issuer,
     keys: () => JSON.stringify(keySet),
     connectors: options.connectors,
-    ...(options.previewClientIdleDays === undefined
-      ? {}
-      : { previewClientIdleDays: options.previewClientIdleDays }),
   });
   const http = httpRouter();
   broker.addHttpRoutes(http);
@@ -94,9 +90,6 @@ export async function createHarness(options: {
       headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
       body: JSON.stringify({
         redirect_uris: [REDIRECT_URI],
-        client_name: `${appId} dev`,
-        software_version: "dev-1",
-        deployment_type: "development",
         // As @samebase/alchemy-identity-hub registers: Convex Auth posts the client credentials.
         token_endpoint_auth_method: "client_secret_post",
       }),

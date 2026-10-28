@@ -145,12 +145,8 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         {
           appId: string;
           clientId: string;
-          clientName: string;
-          createdAt: number;
-          deploymentType: "production" | "development" | "preview";
           redirectUri: string;
           secretHash: string;
-          softwareVersion: string;
           tokenEndpointAuthMethod: "client_secret_post" | "client_secret_basic";
         },
         null,
@@ -163,13 +159,8 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         {
           appId: string;
           clientId: string;
-          clientName: string;
-          createdAt: number;
-          deploymentType: "production" | "development" | "preview";
-          lastSignInAt?: number;
           redirectUri: string;
           secretHash: string;
-          softwareVersion: string;
           tokenEndpointAuthMethod: "client_secret_post" | "client_secret_basic";
         } | null,
         Name
@@ -181,13 +172,8 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         Array<{
           appId: string;
           clientId: string;
-          clientName: string;
-          createdAt: number;
-          deploymentType: "production" | "development" | "preview";
-          lastSignInAt?: number;
           redirectUri: string;
           secretHash: string;
-          softwareVersion: string;
           tokenEndpointAuthMethod: "client_secret_post" | "client_secret_basic";
         }>,
         Name
@@ -211,16 +197,8 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
       cleanup: FunctionReference<
         "mutation",
         "internal",
-        {
-          now: number;
-          previewClientMaxAgeMs?: number;
-          signInRetentionMs: number;
-        },
-        {
-          authRequests: number;
-          previewClients: number;
-          signIns: number;
-        },
+        { now: number },
+        null,
         Name
       >;
     };
@@ -250,21 +228,6 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         "mutation",
         "internal",
         { tokenHash: string },
-        null,
-        Name
-      >;
-    };
-    signIns: {
-      record: FunctionReference<
-        "mutation",
-        "internal",
-        {
-          appId: string;
-          at: number;
-          clientId: string;
-          connector: string;
-          sub: string;
-        },
         null,
         Name
       >;

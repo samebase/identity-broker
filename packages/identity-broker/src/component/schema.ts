@@ -9,13 +9,6 @@ export const vTokenEndpointAuthMethod = union(
   literal("client_secret_basic"),
 );
 
-/** The deployment a client stands for. */
-export const vDeploymentType = union(
-  literal("production"),
-  literal("development"),
-  literal("preview"),
-);
-
 /**
  * What a connector attested about the user. `upstreamId` is the connector's own stable id for the
  * account (the GitHub user id, the OIDC `sub`). The pairwise subject is derived from it on the
@@ -86,28 +79,12 @@ export default defineSchema({
     secretHash: string(),
     tokenEndpointAuthMethod: vTokenEndpointAuthMethod,
     redirectUri: string(),
-    deploymentType: vDeploymentType,
-    clientName: string(),
-    softwareVersion: string(),
-    createdAt: number(),
-    lastSignInAt: optional(number()),
   })
     .index("by_client_id", ["clientId"])
-    .index("by_app_id", ["appId"])
-    .index("by_deployment_type", ["deploymentType"]),
+    .index("by_app_id", ["appId"]),
 
   authRequests: defineTable(vAuthRequest)
     .index("by_upstream_state_hash", ["upstreamStateHash"])
     .index("by_code_hash", ["codeHash"])
     .index("by_expires_at", ["expiresAt"]),
-
-  signIns: defineTable({
-    appId: string(),
-    clientId: string(),
-    connector: string(),
-    sub: string(),
-    at: number(),
-  })
-    .index("by_app_id_and_at", ["appId", "at"])
-    .index("by_at", ["at"]),
 });

@@ -9,14 +9,10 @@ export type Validation<T> =
 
 const MAX_STATE_LENGTH = 4096;
 const MAX_REDIRECT_URI_LENGTH = 2048;
-const MAX_CLIENT_NAME_LENGTH = 120;
 const pkceValuePattern = /^[A-Za-z0-9\-._~]{43,128}$/;
 
 export const TOKEN_ENDPOINT_AUTH_METHODS = ["client_secret_post", "client_secret_basic"] as const;
 export type TokenEndpointAuthMethod = (typeof TOKEN_ENDPOINT_AUTH_METHODS)[number];
-
-export const DEPLOYMENT_TYPES = ["production", "development", "preview"] as const;
-export type DeploymentType = (typeof DEPLOYMENT_TYPES)[number];
 
 /** The own enumerable entries of a JSON value, or an empty record for anything but an object. */
 export function asRecord(value: unknown): Record<string, unknown> {
@@ -85,19 +81,8 @@ export function hostAllowed(hostname: string, allowedHosts: readonly string[]): 
 
 export type RegistrationInput = {
   redirectUri: string;
-  clientName: string;
-  softwareVersion: string;
-  deploymentType: DeploymentType;
   tokenEndpointAuthMethod: TokenEndpointAuthMethod;
 };
-
-function readString(value: unknown, maxLength: number): string | null {
-  if (typeof value !== "string") {
-    return null;
-  }
-  const trimmed = value.trim();
-  return trimmed.length === 0 || trimmed.length > maxLength ? null : trimmed;
-}
 
 /** RFC 7591 registration metadata as this provider accepts it: one redirect URI per client. */
 export function validateRegistration(payload: unknown): Validation<RegistrationInput> {
@@ -120,25 +105,6 @@ export function validateRegistration(payload: unknown): Validation<RegistrationI
       400,
       "invalid_redirect_uri",
       "The redirect URI must be an absolute https URL without a fragment, or http on a loopback host.",
-    );
-  }
-
-  const clientName = readString(record["client_name"], MAX_CLIENT_NAME_LENGTH);
-  if (clientName === null) {
-    return invalid(400, "invalid_client_metadata", "client_name is required.");
-  }
-
-  const softwareVersion = readString(record["software_version"] ?? "unknown", 200);
-  if (softwareVersion === null) {
-    return invalid(400, "invalid_client_metadata", "software_version must be a non-empty string.");
-  }
-
-  const deploymentType = DEPLOYMENT_TYPES.find((type) => type === record["deployment_type"]);
-  if (deploymentType === undefined) {
-    return invalid(
-      400,
-      "invalid_client_metadata",
-      `deployment_type must be one of ${DEPLOYMENT_TYPES.join(", ")}.`,
     );
   }
 
@@ -173,13 +139,7 @@ export function validateRegistration(payload: unknown): Validation<RegistrationI
 
   return {
     ok: true,
-    value: {
-      redirectUri,
-      clientName,
-      softwareVersion,
-      deploymentType,
-      tokenEndpointAuthMethod: authMethod,
-    },
+    value: { redirectUri, tokenEndpointAuthMethod: authMethod },
   };
 }
 

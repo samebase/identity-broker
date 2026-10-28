@@ -126,10 +126,7 @@ describe("one request from /authorize to the token endpoint", () => {
     const completedAt = now + REQUEST_TTL - 1;
     expect(await complete(finished, completedAt)).toBe(true);
     const codeExpiresAt = completedAt + CODE_TTL;
-    await finished.mutation(api.lifecycle.cleanup, {
-      now: codeExpiresAt,
-      signInRetentionMs: 90 * 86_400_000,
-    });
+    await finished.mutation(api.lifecycle.cleanup, { now: codeExpiresAt });
     expect(await exchange(finished, codeExpiresAt)).toMatchObject({
       ok: false,
       description: expect.stringMatching(/expired/),
