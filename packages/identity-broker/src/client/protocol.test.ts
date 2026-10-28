@@ -98,6 +98,18 @@ describe("authorize", () => {
     }
   });
 
+  test("a repeated parameter of any name is refused before the target is read", () => {
+    for (const name of ["client_id", "redirect_uri", "scope"]) {
+      const params = new URLSearchParams(base);
+      params.append(name, "again");
+      expect(validateAuthorizeTarget(params)).toMatchObject({
+        ok: false,
+        error: "invalid_request",
+        description: "A parameter is repeated.",
+      });
+    }
+  });
+
   test("errors name the OAuth error code", () => {
     const target = { clientId: "cl_1", redirectUri: base.redirect_uri };
     const noOpenid = validateAuthorizeRest(

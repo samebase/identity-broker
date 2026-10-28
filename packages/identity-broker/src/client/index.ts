@@ -93,9 +93,13 @@ export function defineIdentityBroker(config: IdentityBrokerConfig) {
   const issuer = issuerUrl.href.replace(/\/$/, "");
   const prefix = issuerUrl.pathname.replace(/\/$/, "");
   const path = (suffix: string) => `${prefix}${suffix}`;
-  /** Binds the chooser's links to its browser. `__Host-` needs Path=/, so a path issuer uses a plain name. */
-  const txnCookieName = prefix === "" ? "__Host-broker_txn" : "broker_txn";
-  const txnCookieAttributes = `HttpOnly; Secure; SameSite=Lax; Path=${prefix === "" ? "/" : prefix}`;
+  /**
+   * The chooser binds its request to the browser that saw it with one cookie per request, named
+   * after the request id, so two sign-ins in one browser keep their own. `__Host-` needs Path=/, so
+   * a path issuer uses a plain name scoped to its path.
+   */
+  const txnCookiePrefix = prefix === "" ? "__Host-broker_txn_" : "broker_txn_";
+  const txnCookieAttributes = `Path=${prefix === "" ? "/" : prefix}; HttpOnly; Secure; SameSite=Lax`;
   const component = config.component;
   const connectors = new Map(config.connectors.map((connector) => [connector.name, connector]));
   if (connectors.size !== config.connectors.length) {
@@ -104,6 +108,48 @@ export function defineIdentityBroker(config: IdentityBrokerConfig) {
   if (connectors.size === 0) {
     throw new Error("At least one connector is required");
   }
+
+  /** The transaction cookies the browser sent, by request id. */
+  function readTxnCookies(request: Request): Map<string, string> {
+    const cookies = new Map<string, string>();
+    for (const pair of request.headers.get("cookie")?.split(";") ?? []) {
+      const separator = pair.indexOf("=");
+      const name = pair.slice(0, separator).trim();
+      if (separator > 0 && name.startsWith(txnCookiePrefix)) {
+        cookies.set(name.slice(txnCookiePrefix.length), pair.slice(separator + 1).trim());
+      }
+    }
+    return cookies;
+  }
+
+  /**
+   * Whether the browser holds the cookie whose hash a chooser request stores. A first-party request
+   * that skipped the chooser stores none and needs none.
+   */
+  async function browserBound(
+    request: Request,
+    stored: { requestId: string; txnCookieHash?: string },
+  ): Promise<boolean> {
+    if (stored.txnCookieHash === undefined) {
+      return true;
+    }
+    const cookie = readTxnCookies(request).get(stored.requestId);
+    return cookie !== undefined && (await sha256Hex(cookie)) === stored.txnCookieHash;
+  }
+
+  /** The Set-Cookie value that deletes a request's cookie, when the browser sent one. */
+  function clearTxnCookie(request: Request, requestId: string): string | undefined {
+    return readTxnCookies(request).has(requestId)
+      ? `${txnCookiePrefix}${requestId}=; ${txnCookieAttributes}; Max-Age=0`
+      : undefined;
+  }
+
+  const unboundPage = () =>
+    errorPage(
+      "Sign-in not continued",
+      "This sign-in did not start in this browser. Return to the app and try again.",
+      400,
+    );
 
   const keySet = (): KeySet => parseKeySet(config.keys());
   const callbackUrl = (connector: OauthConnector | OidcConnector) =>
@@ -165,10 +211,16 @@ export function defineIdentityBroker(config: IdentityBrokerConfig) {
         freshLogin: boolean;
       };
       appName: string;
+      clearCookie: string | undefined;
     },
   ): Promise<Response> {
     const { connector, request } = args;
-    const back = { redirectUri: request.redirectUri, issuer, state: request.state };
+    const back = {
+      redirectUri: request.redirectUri,
+      issuer,
+      state: request.state,
+      clearCookie: args.clearCookie,
+    };
     if (connector.kind === "email") {
       return emailAddressPage({
         appName: args.appName,
@@ -250,6 +302,7 @@ export function defineIdentityBroker(config: IdentityBrokerConfig) {
       redirectUri: client.redirectUri,
       issuer,
       state: params.get("state") ?? undefined,
+      clearCookie: undefined,
     };
     const rest = validateAuthorizeRest(params, target.value);
     if (!rest.ok) {
@@ -279,8 +332,8 @@ export function defineIdentityBroker(config: IdentityBrokerConfig) {
       rest.value.connector === undefined ? undefined : connectors.get(rest.value.connector);
     const only = connectors.size === 1 ? [...connectors.values()][0] : undefined;
     const chosen = app.firstParty ? (named ?? only) : undefined;
-    // The chooser's links work only with this cookie, so a client that fetches the chooser itself
-    // cannot send a user's browser on from it.
+    // The request moves on only with this cookie, so a client that fetches the chooser itself cannot
+    // send a user's browser on from it.
     const txnCookie = randomToken(32);
     const now = Date.now();
     const requestId = randomToken(24);
@@ -309,6 +362,7 @@ export function defineIdentityBroker(config: IdentityBrokerConfig) {
           freshLogin,
         },
         appName: app.name,
+        clearCookie: undefined,
       });
     }
     const page = chooserPage({
@@ -322,7 +376,10 @@ export function defineIdentityBroker(config: IdentityBrokerConfig) {
       })),
       denyHref: `${path("/continue")}?request=${encodeURIComponent(requestId)}&deny=1`,
     });
-    page.headers.append("Set-Cookie", `${txnCookieName}=${txnCookie}; ${txnCookieAttributes}`);
+    page.headers.append(
+      "Set-Cookie",
+      `${txnCookiePrefix}${requestId}=${txnCookie}; ${txnCookieAttributes}; Max-Age=${AUTH_REQUEST_TTL_MS / 1000}`,
+    );
     return page;
   });
 
@@ -338,24 +395,16 @@ export function defineIdentityBroker(config: IdentityBrokerConfig) {
         404,
       );
     }
-    const txnCookie = request.headers
-      .get("cookie")
-      ?.split(";")
-      .map((pair) => pair.trim())
-      .find((pair) => pair.startsWith(`${txnCookieName}=`))
-      ?.slice(txnCookieName.length + 1);
-    if (
-      stored.txnCookieHash === undefined ||
-      txnCookie === undefined ||
-      (await sha256Hex(txnCookie)) !== stored.txnCookieHash
-    ) {
-      return errorPage(
-        "Sign-in not continued",
-        "This sign-in did not start in this browser. Return to the app and try again.",
-        400,
-      );
+    // Only a request that showed the chooser has links to continue.
+    if (stored.txnCookieHash === undefined || !(await browserBound(request, stored))) {
+      return unboundPage();
     }
-    const back = { redirectUri: stored.redirectUri, issuer, state: stored.state };
+    const back = {
+      redirectUri: stored.redirectUri,
+      issuer,
+      state: stored.state,
+      clearCookie: clearTxnCookie(request, requestId),
+    };
     if (url.searchParams.get("deny") !== null) {
       await ctx.runMutation(component.authRequests.abandon, { requestId });
       return authorizationError({
@@ -393,6 +442,7 @@ export function defineIdentityBroker(config: IdentityBrokerConfig) {
         freshLogin: stored.freshLogin,
       },
       appName: app.name,
+      clearCookie: back.clearCookie,
     });
   });
 
@@ -407,6 +457,9 @@ export function defineIdentityBroker(config: IdentityBrokerConfig) {
       const claim = await ctx.runMutation(component.authRequests.claimUpstream, {
         upstreamStateHash: await sha256Hex(state),
         connector: connector.name,
+        txnCookieHashes: await Promise.all(
+          [...readTxnCookies(request).values()].map((cookie) => sha256Hex(cookie)),
+        ),
         now,
       });
       if (claim.status === "missing") {
@@ -416,7 +469,15 @@ export function defineIdentityBroker(config: IdentityBrokerConfig) {
           400,
         );
       }
-      const back = { redirectUri: claim.redirectUri, issuer, state: claim.state };
+      if (claim.status === "unbound") {
+        return unboundPage();
+      }
+      const back = {
+        redirectUri: claim.redirectUri,
+        issuer,
+        state: claim.state,
+        clearCookie: clearTxnCookie(request, claim.requestId),
+      };
       if (claim.status === "expired") {
         return authorizationError({
           ...back,
@@ -505,7 +566,16 @@ export function defineIdentityBroker(config: IdentityBrokerConfig) {
         404,
       );
     }
-    const back = { redirectUri: stored.redirectUri, issuer, state: stored.state };
+    // Every step moves the request on, so every step needs the browser that saw the chooser.
+    if (!(await browserBound(request, stored))) {
+      return unboundPage();
+    }
+    const back = {
+      redirectUri: stored.redirectUri,
+      issuer,
+      state: stored.state,
+      clearCookie: clearTxnCookie(request, requestId),
+    };
     const app = await readApp(ctx, stored.appId);
     if (app === null) {
       return authorizationError({

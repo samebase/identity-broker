@@ -41,6 +41,9 @@ export function page(title: string, body: string, status = 200): Response {
       "Content-Type": "text/html; charset=utf-8",
       "Cache-Control": "no-store",
       "Referrer-Policy": "no-referrer",
+      // No page of the broker may be framed: the chooser doubles as consent.
+      "Content-Security-Policy": "frame-ancestors 'none'",
+      "X-Frame-Options": "DENY",
     },
   });
 }
