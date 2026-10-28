@@ -32,6 +32,15 @@ export const create = mutation({
   },
   returns: v.null(),
   handler: async (ctx, args) => {
+    // A registration that read its token before `apps.remove` ran must not leave a client behind:
+    // a client exists only while its app does, so /authorize and /token need not read the app.
+    const app = await ctx.db
+      .query("apps")
+      .withIndex("by_app_id", (q) => q.eq("appId", args.appId))
+      .unique();
+    if (app === null) {
+      throw new Error(`Unknown app "${args.appId}"`);
+    }
     const existing = await ctx.db
       .query("clients")
       .withIndex("by_client_id", (q) => q.eq("clientId", args.clientId))

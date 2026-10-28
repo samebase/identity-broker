@@ -99,7 +99,6 @@ export async function createHarness(options: {
     await t.mutation(api.registration.mintToken, {
       tokenHash: await sha256Hex(token),
       appId,
-      expiresAt: now + 60_000,
       createdAt: now,
     });
     const response = await fetchBroker(`${issuer}/register`, {

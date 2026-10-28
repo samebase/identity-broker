@@ -58,13 +58,13 @@ export class InvalidProps extends Schema.TaggedError<InvalidProps>()("InvalidPro
   }
 }
 
-/** The hub answered 401: the registration token is expired or wrong. */
+/** The hub answered 401: the registration token is wrong or revoked. */
 export class RegistrationTokenRejected extends Schema.TaggedError<RegistrationTokenRejected>()(
   "RegistrationTokenRejected",
   { issuer: Schema.String },
 ) {
   override get message() {
-    return `The identity hub at ${this.issuer} rejected the registration token: it is expired or wrong. Mint a new one on the hub with \`npx convex run --prod identityBroker:mintRegistrationToken '{"appId":"<app id>"}'\` (an expiresInDays argument sets its lifetime) and pass it as registrationToken.`;
+    return `The identity hub at ${this.issuer} rejected the registration token: it is wrong or revoked. Mint a new one on the hub with \`npx convex run --prod identityBroker:mintRegistrationToken '{"appId":"<app id>"}'\` and pass it as registrationToken.`;
   }
 }
 
@@ -274,7 +274,7 @@ const unregister = (output: ClientAttributes, token: string) =>
     if (response.status === 401) {
       return yield* leftOnHub(
         output,
-        "the hub rejected the registration token, which is expired or wrong",
+        "the hub rejected the registration token, which is wrong or revoked",
       );
     }
     if (response.status === 404) {

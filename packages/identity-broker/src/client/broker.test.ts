@@ -156,13 +156,7 @@ describe("registration", () => {
       redirectUri: REDIRECT_URI,
     });
     const tokens = await h.t.query(api.registration.listTokens, { appId });
-    expect(tokens).toEqual([
-      {
-        tokenHash: await sha256Hex(token),
-        expiresAt: expect.any(Number),
-        createdAt: expect.any(Number),
-      },
-    ]);
+    expect(tokens).toEqual([{ tokenHash: await sha256Hex(token), createdAt: expect.any(Number) }]);
     expect(JSON.stringify(tokens)).not.toContain(token);
     await h.t.mutation(api.registration.revokeToken, { tokenHash: await sha256Hex(token) });
     const revoked = await h.fetchBroker(`${ISSUER}/register`, {
@@ -180,7 +174,7 @@ describe("registration", () => {
     expect((await h.fetchBroker(authorizeUrl(h, { clientId, challenge }))).status).toBe(400);
   });
 
-  test("needs a live token and an allowed host", async () => {
+  test("needs a known token and an allowed host", async () => {
     const h = await createHarness({ connectors: [fakeUpstream().connector] });
     const { token } = await h.registerClient({
       appName: "Bristol",
@@ -200,12 +194,12 @@ describe("registration", () => {
     });
     expect(badHost.status).toBe(400);
     expect((await badHost.json()).error).toBe("invalid_redirect_uri");
-    const expired = await h.fetchBroker(`${ISSUER}/register`, {
+    const unknown = await h.fetchBroker(`${ISSUER}/register`, {
       method: "POST",
       headers: { Authorization: "Bearer rt_unknown", "Content-Type": "application/json" },
       body: "{}",
     });
-    expect(expired.status).toBe(401);
+    expect(unknown.status).toBe(401);
   });
 
   test("DELETE /register/<client_id> deletes a client only with its app's token", async () => {
@@ -220,13 +214,6 @@ describe("registration", () => {
       firstParty: true,
       redirectUri: REDIRECT_URI,
     });
-    const expiredToken = "rt_expired";
-    await h.t.mutation(api.registration.mintToken, {
-      tokenHash: await sha256Hex(expiredToken),
-      appId: bristol.appId,
-      expiresAt: Date.now() - 1,
-      createdAt: Date.now() - 60_000,
-    });
     const unregister = (clientId: string, token: string | undefined) =>
       h.fetchBroker(`${ISSUER}/register/${clientId}`, {
         method: "DELETE",
@@ -235,7 +222,7 @@ describe("registration", () => {
     const exists = async (clientId: string) =>
       (await h.t.query(api.clients.get, { clientId })) !== null;
 
-    for (const token of [undefined, "rt_unknown", expiredToken]) {
+    for (const token of [undefined, "rt_unknown"]) {
       const refused = await unregister(bristol.clientId, token);
       expect(refused.status).toBe(401);
       expect((await refused.json()).error).toBe("invalid_token");
@@ -284,54 +271,6 @@ describe("registration", () => {
         expect(await h.t.query(api.clients.get, { clientId })).toBeNull();
       }
     }
-  });
-});
-
-describe("app deletion", () => {
-  test("with the app row gone, its tokens and clients are refused before their rows are", async () => {
-    const h = await createHarness({ connectors: [fakeUpstream().connector] });
-    const { appId, token, clientId, clientSecret } = await h.registerClient({
-      appName: "Bristol",
-      firstParty: true,
-      redirectUri: REDIRECT_URI,
-    });
-    const { verifier, challenge } = await pkce();
-    const back = await completeUpstream(
-      h,
-      await h.fetchBroker(authorizeUrl(h, { clientId, challenge })),
-    );
-    const code = new URL(back.headers.get("location") ?? "").searchParams.get("code") ?? "";
-    // What deleteApp leaves after its first transaction for an app with more than 200 clients: the
-    // app row is gone, and the token and the client wait for a later batch.
-    await h.t.run(async (ctx) => {
-      const app = await ctx.db
-        .query("apps")
-        .withIndex("by_app_id", (q) => q.eq("appId", appId))
-        .unique();
-      if (app !== null) await ctx.db.delete("apps", app._id);
-    });
-    expect(await h.t.query(api.clients.get, { clientId })).not.toBeNull();
-
-    const registered = await h.fetchBroker(`${ISSUER}/register`, {
-      method: "POST",
-      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-      body: JSON.stringify({
-        redirect_uris: [REDIRECT_URI],
-        client_name: "x",
-        deployment_type: "preview",
-      }),
-    });
-    expect(registered.status).toBe(401);
-
-    const authorized = await h.fetchBroker(authorizeUrl(h, { clientId, challenge }));
-    expect(authorized.status).toBe(302);
-    const location = new URL(authorized.headers.get("location") ?? "");
-    expect(location.origin + location.pathname).toBe(REDIRECT_URI);
-    expect(location.searchParams.get("error")).toBe("server_error");
-
-    const tokens = await exchange(h, { code, clientId, clientSecret, verifier });
-    expect(tokens.status).toBe(401);
-    expect((await tokens.json()).error).toBe("invalid_client");
   });
 });
 
@@ -1024,7 +963,7 @@ describe("authorization code flow with an OAuth connector", () => {
 });
 
 describe("cleanup", () => {
-  test("drops expired requests, codes and tokens and old audit rows; idle preview clients only when asked", async () => {
+  test("drops expired requests and codes and old audit rows; idle preview clients only when asked", async () => {
     const h = await createHarness({ connectors: [fakeUpstream().connector] });
     const now = Date.now();
     await h.t.mutation(api.apps.create, {
@@ -1071,12 +1010,6 @@ describe("cleanup", () => {
       createdAt: now - 3_600_000,
       expiresAt: now - 1,
     });
-    await h.t.mutation(api.registration.mintToken, {
-      tokenHash: "expired-token-hash",
-      appId: "a",
-      expiresAt: now - 1,
-      createdAt: now - 86_400_000,
-    });
     await h.t.mutation(api.signIns.record, {
       appId: "a",
       clientId: "prod-old",
@@ -1092,7 +1025,6 @@ describe("cleanup", () => {
     ).toEqual({
       authRequests: 1,
       authorizationCodes: 0,
-      registrationTokens: 1,
       previewClients: 0,
       signIns: 1,
     });
@@ -1107,7 +1039,6 @@ describe("cleanup", () => {
     ).toEqual({
       authRequests: 0,
       authorizationCodes: 0,
-      registrationTokens: 0,
       previewClients: 1,
       signIns: 0,
     });

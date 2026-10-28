@@ -78,7 +78,6 @@ const CODE_TTL_MS = 60 * 1000;
 const AUTH_TIME_SKEW_SECONDS = 60;
 /** The scopes the broker grants; any other requested scope is dropped. */
 const SCOPES = ["openid", "email", "profile"];
-const REGISTRATION_TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 /** How long `cleanup` keeps an audit row of an issued id_token. */
 export const SIGN_IN_RETENTION_MS = 90 * 24 * 60 * 60 * 1000;
 
@@ -563,7 +562,7 @@ export function defineIdentityBroker(config: IdentityBrokerConfig) {
   }
 
   /** The app of a registration token, or its 401. */
-  async function registrationApp(ctx: Ctx, request: Request, now: number) {
+  async function registrationApp(ctx: Ctx, request: Request) {
     const token = readBearerToken(request.headers.get("authorization"));
     if (token === null) {
       return {
@@ -577,12 +576,11 @@ export function defineIdentityBroker(config: IdentityBrokerConfig) {
     }
     const app = await ctx.runQuery(component.registration.readToken, {
       tokenHash: await sha256Hex(token),
-      now,
     });
     if (app === null) {
       return {
         ok: false,
-        response: oauthError(401, "invalid_token", "The registration token is unknown or expired."),
+        response: oauthError(401, "invalid_token", "The registration token is unknown."),
       } as const;
     }
     return { ok: true, app } as const;
@@ -590,7 +588,7 @@ export function defineIdentityBroker(config: IdentityBrokerConfig) {
 
   const register = httpActionGeneric(async (ctx, request) => {
     const now = Date.now();
-    const auth = await registrationApp(ctx, request, now);
+    const auth = await registrationApp(ctx, request);
     if (!auth.ok) {
       return auth.response;
     }
@@ -654,7 +652,7 @@ export function defineIdentityBroker(config: IdentityBrokerConfig) {
    * so a token learns nothing about another app's clients.
    */
   const unregister = httpActionGeneric(async (ctx, request) => {
-    const auth = await registrationApp(ctx, request, Date.now());
+    const auth = await registrationApp(ctx, request);
     if (!auth.ok) {
       return auth.response;
     }
@@ -702,13 +700,10 @@ export function defineIdentityBroker(config: IdentityBrokerConfig) {
     const client = await ctx.runQuery(component.clients.get, {
       clientId: clientAuth.value.clientId,
     });
-    // A client whose app is deleted is refused at once: deleteApp deletes the app row first and
-    // the app's clients in later batches.
     if (
       client === null ||
       client.tokenEndpointAuthMethod !== clientAuth.value.method ||
-      client.secretHash !== (await sha256Hex(clientAuth.value.clientSecret)) ||
-      (await readApp(ctx, client.appId)) === null
+      client.secretHash !== (await sha256Hex(clientAuth.value.clientSecret))
     ) {
       return oauthError(401, "invalid_client", "Client authentication failed.", challenge);
     }
@@ -827,7 +822,7 @@ export function defineIdentityBroker(config: IdentityBrokerConfig) {
      * host module such as `convex/identityBroker.ts`.
      */
     admin() {
-      const { array, boolean, number, optional, string } = v;
+      const { array, boolean, string } = v;
       return {
         createApp: internalMutationGeneric({
           args: { name: string(), firstParty: boolean(), allowedCallbackHosts: array(string()) },
@@ -853,23 +848,16 @@ export function defineIdentityBroker(config: IdentityBrokerConfig) {
           },
         }),
         mintRegistrationToken: internalMutationGeneric({
-          args: { appId: string(), expiresInDays: optional(number()) },
-          returns: v.object({ token: string(), expiresAt: number() }),
+          args: { appId: string() },
+          returns: v.object({ token: string() }),
           handler: async (ctx, args) => {
             const token = `rt_${randomToken(32)}`;
-            const now = Date.now();
-            const expiresAt =
-              now +
-              (args.expiresInDays === undefined
-                ? REGISTRATION_TOKEN_TTL_MS
-                : args.expiresInDays * 24 * 60 * 60 * 1000);
             await ctx.runMutation(component.registration.mintToken, {
               tokenHash: await sha256Hex(token),
               appId: args.appId,
-              expiresAt,
-              createdAt: now,
+              createdAt: Date.now(),
             });
-            return { token, expiresAt };
+            return { token };
           },
         }),
         setAllowedCallbackHosts: internalMutationGeneric({

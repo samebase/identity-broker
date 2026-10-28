@@ -40,7 +40,7 @@ const fakeHub = (
     Response.json(
       {
         error: "invalid_token",
-        error_description: "The registration token is unknown or expired.",
+        error_description: "The registration token is unknown.",
       },
       { status: 401 },
     );
@@ -277,15 +277,15 @@ test.provider(
 test.provider("a rejected registration token fails with a message that names the fix", (stack) =>
   Effect.gen(function* () {
     const hub = fakeHub();
-    const expired = "rt_expired-token";
+    const revoked = "rt_revoked-token";
     const error = yield* Effect.flip(
-      deployClient(stack, { ...props, registrationToken: Redacted.make(expired) }),
+      deployClient(stack, { ...props, registrationToken: Redacted.make(revoked) }),
     );
     expect(hub.registrations).toHaveLength(1);
     expect(error).toBeInstanceOf(IdentityHub.RegistrationTokenRejected);
     expect(error.message).toContain("identityBroker:mintRegistrationToken");
-    expect(error.message).not.toContain(expired);
-    expect(error.message).not.toContain("unknown or expired");
+    expect(error.message).not.toContain(revoked);
+    expect(error.message).not.toContain("is unknown");
   }),
 );
 
@@ -463,7 +463,7 @@ test.provider(
     Effect.gen(function* () {
       fakeHub();
       yield* deployClient(stack, props);
-      // The token has expired since the deploy.
+      // The token was revoked since the deploy.
       const hub = fakeHub({ tokens: [] });
       const { warnings } = yield* warningsOf(stack.destroy());
       // The state is empty: a second destroy makes no request.

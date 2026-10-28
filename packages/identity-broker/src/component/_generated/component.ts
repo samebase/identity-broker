@@ -378,7 +378,6 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
           authRequests: number;
           authorizationCodes: number;
           previewClients: number;
-          registrationTokens: number;
           signIns: number;
         },
         Name
@@ -389,25 +388,20 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         "query",
         "internal",
         { appId: string },
-        Array<{ createdAt: number; expiresAt: number; tokenHash: string }>,
+        Array<{ createdAt: number; tokenHash: string }>,
         Name
       >;
       mintToken: FunctionReference<
         "mutation",
         "internal",
-        {
-          appId: string;
-          createdAt: number;
-          expiresAt: number;
-          tokenHash: string;
-        },
+        { appId: string; createdAt: number; tokenHash: string },
         null,
         Name
       >;
       readToken: FunctionReference<
         "query",
         "internal",
-        { now: number; tokenHash: string },
+        { tokenHash: string },
         {
           allowedCallbackHosts: Array<string>;
           appId: string;

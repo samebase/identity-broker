@@ -5,7 +5,7 @@ import { internalMutation, mutation, type MutationCtx } from "./_generated/serve
 const { number, object, optional } = v;
 
 /** How many documents one batch deletes per table, so a batch stays well inside one transaction. */
-export const BATCH = 200;
+const BATCH = 200;
 
 const vCleanupArgs = object({
   now: number(),
@@ -17,7 +17,6 @@ const vCleanupArgs = object({
 const vCleanupCounts = object({
   authRequests: number(),
   authorizationCodes: number(),
-  registrationTokens: number(),
   previewClients: number(),
   signIns: number(),
 });
@@ -25,8 +24,8 @@ const vCleanupCounts = object({
 /**
  * Deletes one batch of what has run out. A table that filled its batch may hold more, so the batch
  * schedules the next one with the same `now`, until no table fills a batch. The cutoff never moves,
- * so the run ends: a row written after the run began, a registration token minted with a positive
- * lifetime included, runs out after `now`, and the rows that had run out by then are a fixed set.
+ * so the run ends: a row written after the run began runs out after `now`, and the rows that had
+ * run out by then are a fixed set.
  */
 async function cleanupBatch(
   ctx: MutationCtx,
@@ -46,14 +45,6 @@ async function cleanupBatch(
     .take(BATCH);
   for (const code of codes) {
     await ctx.db.delete("authorizationCodes", code._id);
-  }
-
-  const tokens = await ctx.db
-    .query("registrationTokens")
-    .withIndex("by_expires_at", (q) => q.lt("expiresAt", args.now))
-    .take(BATCH);
-  for (const token of tokens) {
-    await ctx.db.delete("registrationTokens", token._id);
   }
 
   const { previewClientMaxAgeMs } = args;
@@ -86,7 +77,6 @@ async function cleanupBatch(
   const counts = {
     authRequests: requests.length,
     authorizationCodes: codes.length,
-    registrationTokens: tokens.length,
     previewClients: previewClients.length,
     signIns: signIns.length,
   };
@@ -101,11 +91,11 @@ async function cleanupBatch(
 }
 
 /**
- * Deletes what has run out: expired requests, codes and registration tokens, preview clients
- * nobody used for `previewClientMaxAgeMs` when the host passes it, and audit rows older than
- * `signInRetentionMs`. The host schedules this daily from a cron; production and development
- * clients are never touched. The counts are this call's batch: a full batch schedules the next
- * one, so one call drains everything older than `now`.
+ * Deletes what has run out: expired requests and codes, preview clients nobody used for
+ * `previewClientMaxAgeMs` when the host passes it, and audit rows older than `signInRetentionMs`.
+ * The host schedules this daily from a cron; production and development clients are never touched.
+ * The counts are this call's batch: a full batch schedules the next one, so one call drains
+ * everything older than `now`.
  */
 export const cleanup = mutation({
   args: vCleanupArgs,

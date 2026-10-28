@@ -88,12 +88,10 @@ export default defineSchema({
   registrationTokens: defineTable({
     tokenHash: string(),
     appId: string(),
-    expiresAt: number(),
     createdAt: number(),
   })
     .index("by_token_hash", ["tokenHash"])
-    .index("by_app_id", ["appId"])
-    .index("by_expires_at", ["expiresAt"]),
+    .index("by_app_id", ["appId"]),
 
   clients: defineTable({
     clientId: string(),

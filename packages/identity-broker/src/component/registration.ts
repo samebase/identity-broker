@@ -3,9 +3,12 @@ import { mutation, query } from "./_generated/server";
 
 const { array, boolean, number, object, string } = v;
 
-/** Stores the hash of an initial access token (RFC 7591 section 3) that registers clients of one app. */
+/**
+ * Stores the hash of an initial access token (RFC 7591 section 3) that registers clients of one
+ * app. It works until `revokeToken` or the app's deletion removes it.
+ */
 export const mintToken = mutation({
-  args: { tokenHash: string(), appId: string(), expiresAt: number(), createdAt: number() },
+  args: { tokenHash: string(), appId: string(), createdAt: number() },
   returns: v.null(),
   handler: async (ctx, args) => {
     const app = await ctx.db
@@ -18,16 +21,15 @@ export const mintToken = mutation({
     await ctx.db.insert("registrationTokens", {
       tokenHash: args.tokenHash,
       appId: args.appId,
-      expiresAt: args.expiresAt,
       createdAt: args.createdAt,
     });
     return null;
   },
 });
 
-/** The app a live registration token belongs to, or null for an unknown or expired token. */
+/** The app a registration token belongs to, or null for an unknown token. */
 export const readToken = query({
-  args: { tokenHash: string(), now: number() },
+  args: { tokenHash: string() },
   returns: v.union(
     object({
       appId: string(),
@@ -42,7 +44,7 @@ export const readToken = query({
       .query("registrationTokens")
       .withIndex("by_token_hash", (q) => q.eq("tokenHash", args.tokenHash))
       .unique();
-    if (token === null || token.expiresAt <= args.now) {
+    if (token === null) {
       return null;
     }
     const app = await ctx.db
@@ -64,23 +66,19 @@ export const readToken = query({
 /** The tokens of one app, as hashes: the plaintext is never stored. Oldest first. */
 export const listTokens = query({
   args: { appId: string() },
-  returns: array(object({ tokenHash: string(), expiresAt: number(), createdAt: number() })),
+  returns: array(object({ tokenHash: string(), createdAt: number() })),
   handler: async (ctx, args) => {
     const tokens = await ctx.db
       .query("registrationTokens")
       .withIndex("by_app_id", (q) => q.eq("appId", args.appId))
       .collect();
     return tokens
-      .map((token) => ({
-        tokenHash: token.tokenHash,
-        expiresAt: token.expiresAt,
-        createdAt: token.createdAt,
-      }))
+      .map((token) => ({ tokenHash: token.tokenHash, createdAt: token.createdAt }))
       .sort((a, b) => a.createdAt - b.createdAt || a.tokenHash.localeCompare(b.tokenHash));
   },
 });
 
-/** Deletes a registration token before it expires. Clients it registered stay. */
+/** Deletes a registration token. Clients it registered stay. */
 export const revokeToken = mutation({
   args: { tokenHash: string() },
   returns: v.null(),
