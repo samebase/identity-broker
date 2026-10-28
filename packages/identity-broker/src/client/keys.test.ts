@@ -1,6 +1,6 @@
 import { describe, expect, test } from "vite-plus/test";
+import { assertKeySetUsable } from "./jwt.js";
 import {
-  assertKeySetUsable,
   createKeySet,
   currentKey,
   KEY_OVERLAP_MS,
@@ -71,7 +71,7 @@ describe("key set validation", () => {
     return Object.fromEntries(Object.entries(record).filter(([member]) => member !== name));
   }
 
-  test("a key set from createKeySet, and its rotation, parse back unchanged and import", async () => {
+  test("a key set from createKeySet, and its rotation, parse back unchanged and sign and verify", async () => {
     const created = await createKeySet();
     const rotated = await rotateKeySet(created);
     for (const keySet of [created, rotated]) {
@@ -162,39 +162,37 @@ describe("key set validation", () => {
     expect(publicJwks(leaked).keys[1]).not.toHaveProperty("d");
   });
 
-  test("a corrupted d fails the shape check when malformed and the import check when it is another key's", async () => {
+  test("an RSA key under 2048 bits passes the shape check and fails at signing", async () => {
     const keySet = await createKeySet();
-    const { kid, privateJwk } = currentKey(keySet);
-    const malformed = { ...privateJwk, d: "AAA*" };
-    expect(() => parseKeySet(withPrivateJwk(keySet, malformed))).toThrow(
-      `IDENTITY_BROKER_KEYS key "${kid}" privateJwk.d must be a non-empty base64url string`,
+    const { kid } = currentKey(keySet);
+    const small = await crypto.subtle.generateKey(
+      {
+        name: "RSASSA-PKCS1-v1_5",
+        modulusLength: 1024,
+        publicExponent: new Uint8Array([1, 0, 1]),
+        hash: "SHA-256",
+      },
+      true,
+      ["sign", "verify"],
     );
-    await expect(
-      assertKeySetUsable({ ...keySet, keys: [{ kid, status: "current", privateJwk: malformed }] }),
-    ).rejects.toThrow(`IDENTITY_BROKER_KEYS key "${kid}" is not a usable RS256 key`);
-
-    // Another key's member is well formed, so only the import check sees it; e is AQAB for both.
-    const other = currentKey(await createKeySet()).privateJwk;
-    const swaps = [
-      ["n", "n is not p times q"],
-      ["d", "d is not the private exponent for e"],
-      ["p", "n is not p times q"],
-      ["q", "n is not p times q"],
-      ["dp", "dp, dq or qi does not match d, p and q"],
-      ["dq", "dp, dq or qi does not match d, p and q"],
-      ["qi", "dp, dq or qi does not match d, p and q"],
-    ] as const;
-    for (const [member, reason] of swaps) {
-      const swapped = parseKeySet(
-        withPrivateJwk(keySet, { ...privateJwk, [member]: other[member] }),
-      );
-      await expect(assertKeySetUsable(swapped)).rejects.toThrow(
-        `IDENTITY_BROKER_KEYS key "${kid}" is not a usable RS256 key: ${reason}`,
-      );
-    }
+    const privateJwk = await crypto.subtle.exportKey("jwk", small.privateKey);
+    const parsed = parseKeySet(withPrivateJwk(keySet, { ...privateJwk, kid, use: "sig" }));
+    await expect(assertKeySetUsable(parsed)).rejects.toThrow(
+      `IDENTITY_BROKER_KEYS key "${kid}" fails at sign: RS256 requires key modulusLength to be 2048 bits or larger`,
+    );
   });
 
-  test("every key imports as RS256: a current or retired key for another algorithm is refused", async () => {
+  test("a current key whose JWK names another kid than its entry fails at verification", async () => {
+    const keySet = await createKeySet();
+    const { kid, privateJwk } = currentKey(keySet);
+    const parsed = parseKeySet(withPrivateJwk(keySet, { ...privateJwk, kid: "another-kid" }));
+    expect(publicJwks(parsed).keys.map((jwk) => jwk.kid)).toEqual(["another-kid"]);
+    await expect(assertKeySetUsable(parsed)).rejects.toThrow(
+      `IDENTITY_BROKER_KEYS key "${kid}" fails at verify`,
+    );
+  });
+
+  test("a key the JWKS publishes for another algorithm fails at verification, current or retired", async () => {
     const rotated = await rotateKeySet(await createKeySet());
     const [current, retired] = rotated.keys;
     if (current?.status !== "current" || retired?.status !== "retired") {
@@ -205,12 +203,12 @@ describe("key set validation", () => {
         ...rotated,
         keys: [{ ...current, privateJwk: { ...current.privateJwk, alg: "RS512" } }, retired],
       }),
-    ).rejects.toThrow(`IDENTITY_BROKER_KEYS key "${current.kid}" is not a usable RS256 key`);
+    ).rejects.toThrow(`IDENTITY_BROKER_KEYS key "${current.kid}" fails at verify`);
     await expect(
       assertKeySetUsable({
         ...rotated,
         keys: [current, { ...retired, publicJwk: { ...retired.publicJwk, alg: "RS512" } }],
       }),
-    ).rejects.toThrow(`IDENTITY_BROKER_KEYS key "${retired.kid}" is not a usable RS256 key`);
+    ).rejects.toThrow(`IDENTITY_BROKER_KEYS key "${retired.kid}" fails at verify`);
   });
 });

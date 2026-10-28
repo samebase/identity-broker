@@ -140,7 +140,7 @@ function rsaJwk(
 
 /**
  * Parses the env var. Throws on anything that is not a complete key set: a hub without keys is
- * down. It checks the shape only; `assertKeySetUsable` imports the keys.
+ * down. It checks the shape only; `assertKeySetUsable` signs and verifies with the keys.
  */
 export function parseKeySet(raw: string | undefined): KeySet {
   if (raw === undefined || raw.trim().length === 0) {
@@ -186,65 +186,6 @@ export function parseKeySet(raw: string | undefined): KeySet {
     throw new Error("IDENTITY_BROKER_KEYS must hold exactly one current key");
   }
   return { version: 1, pairwiseSalt: salt, keys };
-}
-
-/** RS256 in WebCrypto terms: what `importJWK(privateJwk, SIGNING_ALGORITHM)` imports for the signer. */
-const RS256_IMPORT = { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" } as const;
-
-/** A Base64urlUInt JWK member (RFC 7518 section 2) as the integer it encodes. */
-function base64urlUInt(name: string, value: string | undefined): bigint {
-  if (value === undefined || !BASE64URL.test(value)) {
-    throw new Error(`${name} is not a non-empty base64url string`);
-  }
-  const binary = atob(value.replace(/-/g, "+").replace(/_/g, "/"));
-  const hex = Array.from(binary, (char) => char.charCodeAt(0).toString(16).padStart(2, "0"));
-  return BigInt(`0x${hex.join("")}`);
-}
-
-/** The members of an RSA private key belong to one key (RFC 8017 section 3.2). */
-function assertOneRsaKey(jwk: JWK): void {
-  const n = base64urlUInt("n", jwk.n);
-  const e = base64urlUInt("e", jwk.e);
-  const d = base64urlUInt("d", jwk.d);
-  const p = base64urlUInt("p", jwk.p);
-  const q = base64urlUInt("q", jwk.q);
-  const dp = base64urlUInt("dp", jwk.dp);
-  const dq = base64urlUInt("dq", jwk.dq);
-  const qi = base64urlUInt("qi", jwk.qi);
-  if (n !== p * q) {
-    throw new Error("n is not p times q");
-  }
-  if ((e * d) % (p - 1n) !== 1n || (e * d) % (q - 1n) !== 1n) {
-    throw new Error("d is not the private exponent for e");
-  }
-  if (dp !== d % (p - 1n) || dq !== d % (q - 1n) || (qi * q) % p !== 1n) {
-    throw new Error("dp, dq or qi does not match d, p and q");
-  }
-}
-
-/**
- * Imports every key the way the broker uses it: the current private key to sign, each retired
- * public key to verify. Node's WebCrypto also imports a private key whose `d` is empty or belongs
- * to another key and then signs with `p`, `q`, `dp`, `dq` and `qi` alone, so the current key's
- * members are also checked against each other: a runtime that signs with `d` would fail at the
- * first sign-in. For `identity-broker keys`; the host parses its keys per request and skips this.
- */
-export async function assertKeySetUsable(keySet: KeySet): Promise<void> {
-  for (const entry of keySet.keys) {
-    try {
-      if (entry.status === "current") {
-        await crypto.subtle.importKey("jwk", entry.privateJwk, RS256_IMPORT, false, ["sign"]);
-        assertOneRsaKey(entry.privateJwk);
-      } else {
-        await crypto.subtle.importKey("jwk", entry.publicJwk, RS256_IMPORT, false, ["verify"]);
-      }
-    } catch (error) {
-      throw new Error(
-        `IDENTITY_BROKER_KEYS key "${entry.kid}" is not a usable ${SIGNING_ALGORITHM} key: ${error instanceof Error ? error.message : String(error)}`,
-        { cause: error },
-      );
-    }
-  }
 }
 
 export function currentKey(keySet: KeySet): { kid: string; privateJwk: JWK } {

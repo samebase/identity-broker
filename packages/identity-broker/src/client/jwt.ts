@@ -1,5 +1,11 @@
 import { createLocalJWKSet, jwtVerify, SignJWT, type JWTPayload } from "jose";
-import { importSigningKey, publicJwks, SIGNING_ALGORITHM, type KeySet } from "./keys.js";
+import {
+  currentKey,
+  importSigningKey,
+  publicJwks,
+  SIGNING_ALGORITHM,
+  type KeySet,
+} from "./keys.js";
 
 /** Both tokens live this long: the app's callback redeems the code and the id_token at once. */
 export const TOKEN_TTL_SECONDS = 5 * 60;
@@ -89,5 +95,53 @@ export async function verifyAccessToken(args: {
     return claims;
   } catch {
     return null;
+  }
+}
+
+function reason(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+/**
+ * Proves a key set the way the broker uses it: an id_token from `signIdToken` must verify against
+ * the JWKS that /.well-known/jwks.json publishes, its key found by kid, and each retired key there
+ * must resolve as a relying party resolves it. `parseKeySet` checks only the shape, so it passes an
+ * RSA key under the 2048 bits RS256 needs and a current key whose JWK names another kid than its
+ * entry. For `identity-broker keys`; the host reads its keys per request and skips this.
+ */
+export async function assertKeySetUsable(keySet: KeySet): Promise<void> {
+  const { kid } = currentKey(keySet);
+  const issuer = "urn:identity-broker:key-check";
+  let token: string;
+  try {
+    token = await signIdToken({
+      keySet,
+      issuer,
+      clientId: issuer,
+      claims: { sub: "key-check", connector: "key-check" },
+      authTime: Date.now(),
+      nonce: undefined,
+    });
+  } catch (error) {
+    throw new Error(`IDENTITY_BROKER_KEYS key "${kid}" fails at sign: ${reason(error)}`);
+  }
+  const document = publicJwks(keySet);
+  const jwks = createLocalJWKSet(document);
+  try {
+    await jwtVerify(token, jwks, { issuer, audience: issuer, algorithms: [SIGNING_ALGORITHM] });
+  } catch (error) {
+    throw new Error(`IDENTITY_BROKER_KEYS key "${kid}" fails at verify: ${reason(error)}`);
+  }
+  for (const { kid: published } of document.keys) {
+    // The current key verified above; a current JWK without kid already failed there.
+    if (published !== undefined && published !== kid) {
+      try {
+        await jwks({ alg: SIGNING_ALGORITHM, kid: published });
+      } catch (error) {
+        throw new Error(
+          `IDENTITY_BROKER_KEYS key "${published}" fails at verify: ${reason(error)}`,
+        );
+      }
+    }
   }
 }

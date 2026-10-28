@@ -57,13 +57,8 @@ export type {
 export { github } from "./connectors/github.js";
 export { google } from "./connectors/google.js";
 export { email } from "./connectors/email.js";
-export {
-  assertKeySetUsable,
-  createKeySet,
-  parseKeySet,
-  rotateKeySet,
-  type KeySet,
-} from "./keys.js";
+export { createKeySet, parseKeySet, rotateKeySet, type KeySet } from "./keys.js";
+export { assertKeySetUsable } from "./jwt.js";
 
 export type IdentityBrokerConfig = {
   /** `components.identityBroker` of the host app. */

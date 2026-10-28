@@ -82,7 +82,7 @@ export const {
 Keys: `npx identity-broker keys` prints the value for `IDENTITY_BROKER_KEYS`; `keys --rotate`
 advances it, and `keys --rotate --no-overlap` replaces a compromised key at once. Back up the key
 set: its salt makes every `sub`. `parseKeySet` checks a value's shape before a deploy, and
-`assertKeySetUsable` imports its keys.
+`assertKeySetUsable` signs a test token with it and verifies that token against its JWKS.
 
 ## Register an app's deployments
 
