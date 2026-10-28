@@ -14,12 +14,9 @@ const STYLE = `
   h1 { font-size: 1.25rem; font-weight: 600; }
   p { margin: 0.5rem 0; }
   .list { display: grid; gap: 0.5rem; margin: 1.5rem 0; }
-  a.button, button { display: block; width: 100%; box-sizing: border-box; padding: 0.75rem 1rem;
+  a.button { display: block; width: 100%; box-sizing: border-box; padding: 0.75rem 1rem;
     font: inherit; color: #111; background: #fff; border: 1px solid #111; text-align: center;
     text-decoration: none; cursor: pointer; }
-  input { display: block; width: 100%; box-sizing: border-box; padding: 0.75rem 1rem; font: inherit;
-    border: 1px solid #111; margin: 1rem 0; }
-  .error { color: #b00020; }
   .muted { color: #555; }
 `;
 
@@ -84,49 +81,6 @@ export function chooserPage(args: {
   return page(
     `Sign in to ${args.appName}`,
     `<h1>Sign in to ${escape(args.appName)}</h1>${consent}<div class="list">${buttons}</div>${deny}`,
-  );
-}
-
-export function emailAddressPage(args: {
-  appName: string;
-  action: string;
-  requestId: string;
-  error?: string;
-  status?: number;
-}): Response {
-  const error = args.error === undefined ? "" : `<p class="error">${escape(args.error)}</p>`;
-  return page(
-    `Sign in to ${args.appName}`,
-    `<h1>Sign in to ${escape(args.appName)}</h1><p>Enter your email address. A six-digit code is sent to it.</p>${error}
-<form method="post" action="${escape(args.action)}">
-<input type="hidden" name="request" value="${escape(args.requestId)}">
-<input type="hidden" name="step" value="send">
-<input type="email" name="email" required autocomplete="email" autofocus placeholder="you@example.com">
-<button type="submit">Send code</button>
-</form>`,
-    args.status,
-  );
-}
-
-export function emailCodePage(args: {
-  appName: string;
-  action: string;
-  requestId: string;
-  email: string;
-  error?: string;
-  status?: number;
-}): Response {
-  const error = args.error === undefined ? "" : `<p class="error">${escape(args.error)}</p>`;
-  return page(
-    `Sign in to ${args.appName}`,
-    `<h1>Check your email</h1><p>Enter the six-digit code sent to ${escape(args.email)}.</p>${error}
-<form method="post" action="${escape(args.action)}">
-<input type="hidden" name="request" value="${escape(args.requestId)}">
-<input type="hidden" name="step" value="verify">
-<input type="text" name="code" inputmode="numeric" pattern="[0-9]{6}" required autocomplete="one-time-code" autofocus placeholder="000000">
-<button type="submit">Continue</button>
-</form>`,
-    args.status,
   );
 }
 

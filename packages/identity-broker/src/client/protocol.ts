@@ -373,13 +373,3 @@ export function readBearerToken(authorization: string | null): string | null {
   const match = authorization?.trim().match(/^bearer\s+(.+)$/i);
   return match?.[1]?.trim() || null;
 }
-
-/** An email address as the broker identifies it: trimmed, NFC-normalized, lowercased. */
-export function canonicalEmail(value: string): string | null {
-  const email = value.trim().normalize("NFC").toLowerCase();
-  const at = email.indexOf("@");
-  if (at <= 0 || at === email.length - 1 || email.includes(" ") || email.length > 320) {
-    return null;
-  }
-  return email;
-}

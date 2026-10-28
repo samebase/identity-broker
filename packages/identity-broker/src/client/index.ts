@@ -10,14 +10,9 @@ import {
 import { v } from "convex/values";
 import * as oauth from "oauth4webapi";
 import type { ComponentApi } from "../component/_generated/component.js";
-import type {
-  Connector,
-  EmailConnector,
-  OauthConnector,
-  OidcConnector,
-} from "./connectors/types.js";
+import type { Connector, OauthConnector, OidcConnector } from "./connectors/types.js";
 import { finishUpstream, startUpstream, type UpstreamFinish } from "./connectors/upstream.js";
-import { chooserPage, emailAddressPage, emailCodePage, errorPage } from "./html.js";
+import { chooserPage, errorPage } from "./html.js";
 import {
   signAccessToken,
   signIdToken,
@@ -27,7 +22,6 @@ import {
 } from "./jwt.js";
 import { parseKeySet, publicJwks, SIGNING_ALGORITHM, type KeySet } from "./keys.js";
 import {
-  canonicalEmail,
   hostAllowed,
   readBearerToken,
   readClientAuthentication,
@@ -44,19 +38,16 @@ import {
   readParameters,
   redirect,
 } from "./responses.js";
-import { pairwiseSubject, randomDigits, randomToken, sha256Hex } from "./subject.js";
+import { pairwiseSubject, randomToken, sha256Hex } from "./subject.js";
 
 export type {
   Connector,
-  EmailConnector,
   OauthConnector,
   OidcConnector,
-  SendEmailCode,
   UpstreamIdentity,
 } from "./connectors/types.js";
 export { github } from "./connectors/github.js";
 export { google } from "./connectors/google.js";
-export { email } from "./connectors/email.js";
 export { createKeySet, parseKeySet, rotateKeySet, type KeySet } from "./keys.js";
 export { assertKeySetUsable } from "./jwt.js";
 
@@ -83,10 +74,8 @@ export type IdentityBrokerConfig = {
 const AUTH_REQUEST_TTL_MS = 10 * 60 * 1000;
 /** A code is redeemed by the client's callback at once. */
 const CODE_TTL_MS = 60 * 1000;
-const EMAIL_CODE_TTL_MS = 10 * 60 * 1000;
 /** How far an upstream `auth_time` may sit outside the request's lifetime: the clocks differ. */
 const AUTH_TIME_SKEW_SECONDS = 60;
-const EMAIL_MAX_ATTEMPTS = 5;
 /** The scopes the broker grants; any other requested scope is dropped. */
 const SCOPES = ["openid", "email", "profile"];
 const REGISTRATION_TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1000;
@@ -213,7 +202,7 @@ export function defineIdentityBroker(config: IdentityBrokerConfig) {
     json(publicJwks(keySet()), 200, { "Cache-Control": "public, max-age=300" }),
   );
 
-  /** Sends the user to a connector for a stored request, or shows the email form. */
+  /** Sends the user to a connector for a stored request. */
   async function startConnector(
     ctx: Ctx,
     args: {
@@ -225,7 +214,6 @@ export function defineIdentityBroker(config: IdentityBrokerConfig) {
         state: string | undefined;
         freshLogin: boolean;
       };
-      appName: string;
       clearCookie: string | undefined;
     },
   ): Promise<Response> {
@@ -236,13 +224,6 @@ export function defineIdentityBroker(config: IdentityBrokerConfig) {
       state: request.state,
       clearCookie: args.clearCookie,
     };
-    if (connector.kind === "email") {
-      return emailAddressPage({
-        appName: args.appName,
-        action: path("/connectors/email"),
-        requestId: request.requestId,
-      });
-    }
     // Freshness is honored only as prompt=login upstream; a connector without it is refused, never
     // pretended.
     if (request.freshLogin && (connector.kind === "oauth" || !connector.promptLogin)) {
@@ -378,7 +359,6 @@ export function defineIdentityBroker(config: IdentityBrokerConfig) {
           state: rest.value.state,
           freshLogin,
         },
-        appName: app.name,
         clearCookie: undefined,
       });
     }
@@ -458,7 +438,6 @@ export function defineIdentityBroker(config: IdentityBrokerConfig) {
         state: stored.state,
         freshLogin: stored.freshLogin,
       },
-      appName: app.name,
       clearCookie: back.clearCookie,
     });
   });
@@ -582,200 +561,6 @@ export function defineIdentityBroker(config: IdentityBrokerConfig) {
       return authorizationResponse({ ...back, params: { code } });
     });
   }
-
-  const emailConnector = [...connectors.values()].find(
-    (connector): connector is EmailConnector => connector.kind === "email",
-  );
-
-  const emailStep = httpActionGeneric(async (ctx, request) => {
-    if (emailConnector === undefined) {
-      return errorPage("Not configured", "Email sign-in is not configured.", 404);
-    }
-    const params = await readParameters(request);
-    if (params === null) {
-      return errorPage("Invalid form", "The form must be application/x-www-form-urlencoded.", 415);
-    }
-    const requestId = params.get("request") ?? "";
-    const stored = await ctx.runQuery(component.authRequests.get, { requestId });
-    if (stored === null) {
-      return errorPage(
-        "Sign-in not found",
-        "This sign-in is unknown or finished. Return to the app and try again.",
-        404,
-      );
-    }
-    // Every step moves the request on, so every step needs the browser that saw the chooser.
-    if (!(await browserBound(request, stored))) {
-      return unboundPage();
-    }
-    const back = {
-      redirectUri: stored.redirectUri,
-      issuer,
-      state: stored.state,
-      clearCookie: clearTxnCookie(request, requestId),
-    };
-    const app = await readApp(ctx, stored.appId);
-    if (app === null) {
-      return authorizationError({
-        ...back,
-        error: "server_error",
-        description: "The client's app is gone.",
-      });
-    }
-    const action = path("/connectors/email");
-    const now = Date.now();
-    const step = params.get("step");
-    if (step === "send") {
-      const address = canonicalEmail(params.get("email") ?? "");
-      if (address === null) {
-        return emailAddressPage({
-          appName: app.name,
-          action,
-          requestId,
-          error: "Enter a valid email address.",
-        });
-      }
-      const code = randomDigits(6);
-      const started = await ctx.runMutation(component.authRequests.startEmail, {
-        requestId,
-        connector: emailConnector.name,
-        email: address,
-        emailHash: await sha256Hex(address),
-        emailCodeHash: await sha256Hex(code),
-        emailCodeExpiresAt: now + EMAIL_CODE_TTL_MS,
-        maxAttempts: EMAIL_MAX_ATTEMPTS,
-        now,
-      });
-      if (!started.ok) {
-        switch (started.error) {
-          case "not_found":
-            return errorPage(
-              "Sign-in not found",
-              "This sign-in is unknown. Return to the app and try again.",
-              404,
-            );
-          case "expired":
-          case "wrong_status":
-            return authorizationError({
-              ...back,
-              error: "access_denied",
-              description: "The sign-in expired.",
-            });
-          case "locked":
-            return authorizationError({
-              ...back,
-              error: "access_denied",
-              description: "Too many wrong codes.",
-            });
-          case "too_soon":
-          case "request_limit":
-          case "address_limit":
-          case "global_limit": {
-            // The page the user is on, with one neutral line: nothing says whether the address is
-            // known, and neither the address nor a code is logged.
-            const error =
-              started.error === "too_soon"
-                ? "Wait a minute before asking for another code."
-                : "Too many codes were sent. Try again later.";
-            return stored.status === "emailSent"
-              ? emailCodePage({
-                  appName: app.name,
-                  action,
-                  requestId,
-                  email: stored.email,
-                  error,
-                  status: 429,
-                })
-              : emailAddressPage({ appName: app.name, action, requestId, error, status: 429 });
-          }
-          default:
-            return started satisfies never;
-        }
-      }
-      try {
-        await ctx.runAction(emailConnector.send, { to: address, code, appName: app.name });
-      } catch (error) {
-        // Only the class name: a delivery error can carry the address or the code.
-        console.error(
-          `Connector "${emailConnector.name}" could not send a code: ${error instanceof Error ? error.constructor.name : typeof error}`,
-        );
-        return errorPage(
-          "Email not sent",
-          "The code could not be sent. Try again in a moment.",
-          502,
-        );
-      }
-      return emailCodePage({ appName: app.name, action, requestId, email: address });
-    }
-    if (step === "verify") {
-      if (stored.status !== "emailSent") {
-        return emailAddressPage({
-          appName: app.name,
-          action,
-          requestId,
-          error: "Request a code first.",
-        });
-      }
-      const typed = (params.get("code") ?? "").trim();
-      const authorizationCode = randomToken(32);
-      const result = await ctx.runMutation(component.authRequests.verifyEmailCode, {
-        requestId,
-        emailCodeHash: await sha256Hex(typed),
-        maxAttempts: EMAIL_MAX_ATTEMPTS,
-        codeHash: await sha256Hex(authorizationCode),
-        codeExpiresAt: now + CODE_TTL_MS,
-        now,
-      });
-      if (result.ok) {
-        return authorizationResponse({ ...back, params: { code: authorizationCode } });
-      }
-      switch (result.error) {
-        case "wrong_code":
-          return emailCodePage({
-            appName: app.name,
-            action,
-            requestId,
-            email: stored.email,
-            error: "That code is not right.",
-          });
-        case "code_expired":
-          return emailAddressPage({
-            appName: app.name,
-            action,
-            requestId,
-            error: "The code expired. Request a new one.",
-          });
-        case "locked":
-          return authorizationError({
-            ...back,
-            error: "access_denied",
-            description: "Too many wrong codes.",
-          });
-        case "expired":
-          return authorizationError({
-            ...back,
-            error: "access_denied",
-            description: "The sign-in expired.",
-          });
-        case "wrong_status":
-          return emailAddressPage({
-            appName: app.name,
-            action,
-            requestId,
-            error: "Request a code first.",
-          });
-        case "not_found":
-          return errorPage(
-            "Sign-in not found",
-            "This sign-in is unknown. Return to the app and try again.",
-            404,
-          );
-        default:
-          return result satisfies never;
-      }
-    }
-    return errorPage("Invalid form", "Unknown step.", 400);
-  });
 
   /** The app of a registration token, or its 401. */
   async function registrationApp(ctx: Ctx, request: Request, now: number) {
@@ -1029,15 +814,11 @@ export function defineIdentityBroker(config: IdentityBrokerConfig) {
       http.route({ path: path("/userinfo"), method: "GET", handler: userinfo });
       http.route({ path: path("/userinfo"), method: "POST", handler: userinfo });
       for (const connector of connectors.values()) {
-        if (connector.kind === "email") {
-          http.route({ path: path("/connectors/email"), method: "POST", handler: emailStep });
-        } else {
-          http.route({
-            path: path(`/connectors/${connector.name}/callback`),
-            method: "GET",
-            handler: upstreamCallback(connector),
-          });
-        }
+        http.route({
+          path: path(`/connectors/${connector.name}/callback`),
+          method: "GET",
+          handler: upstreamCallback(connector),
+        });
       }
     },
 

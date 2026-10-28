@@ -2,7 +2,6 @@
 import { decodeJwt } from "jose";
 import { afterEach, describe, expect, test, vi } from "vite-plus/test";
 import { api } from "../component/_generated/api.js";
-import { email } from "./connectors/email.js";
 import { google } from "./connectors/google.js";
 import { defineIdentityBroker } from "./index.js";
 import {
@@ -1024,274 +1023,6 @@ describe("authorization code flow with an OAuth connector", () => {
   });
 });
 
-describe("email connector", () => {
-  test("sends a code, verifies it, locks after five misses", async () => {
-    const sent: Array<{ to: string; code: string; appName: string }> = [];
-    const send = { functionHandle: "test" } as unknown;
-    const h = await createHarness({
-      // @ts-expect-error a stand-in function reference; the harness replaces ctx.runAction.
-      connectors: [email({ send })],
-      runAction: async (_reference, args) => {
-        sent.push(args as { to: string; code: string; appName: string });
-        return null;
-      },
-    });
-    const { clientId, clientSecret } = await h.registerClient({
-      appName: "Bristol",
-      firstParty: true,
-      redirectUri: REDIRECT_URI,
-    });
-    const { verifier, challenge } = await pkce();
-    const page = await h.fetchBroker(authorizeUrl(h, { clientId, challenge }));
-    expect(page.status).toBe(200);
-    const requestId = (await page.text()).match(/name="request" value="([^"]+)"/)?.[1] ?? "";
-    const post = (fields: Record<string, string>) =>
-      h.fetchBroker(`${ISSUER}/connectors/email`, {
-        method: "POST",
-        headers: { "Content-Type": "application/x-www-form-urlencoded" },
-        body: new URLSearchParams({ request: requestId, ...fields }).toString(),
-      });
-
-    const badAddress = await post({ step: "send", email: "nope" });
-    expect(await badAddress.text()).toContain("valid email");
-    const codePage = await post({ step: "send", email: " Nicu@Example.com " });
-    expect(codePage.status).toBe(200);
-    expect(sent).toHaveLength(1);
-    expect(sent[0]).toMatchObject({ to: "nicu@example.com", appName: "Bristol" });
-    expect(sent[0]?.code).toMatch(/^\d{6}$/);
-
-    for (let attempt = 0; attempt < 4; attempt++) {
-      const wrong = await post({
-        step: "verify",
-        code: "000000" === sent[0]?.code ? "111111" : "000000",
-      });
-      expect(await wrong.text()).toContain("not right");
-    }
-    const ok = await post({ step: "verify", code: sent[0]?.code ?? "" });
-    expect(ok.status).toBe(302);
-    const code = new URL(ok.headers.get("location") ?? "").searchParams.get("code") ?? "";
-    const tokens = await exchange(h, { code, clientId, clientSecret, verifier });
-    expect(tokens.status).toBe(200);
-    const claims = decodeJwt((await tokens.json()).id_token);
-    expect(claims["email"]).toBe("nicu@example.com");
-    expect(claims["email_verified"]).toBe(true);
-    expect(claims["connector"]).toBe("email");
-  });
-
-  test("a chooser request's email steps need the cookie, even with the right code", async () => {
-    const codes: string[] = [];
-    const h = await createHarness({
-      // @ts-expect-error a stand-in function reference; the harness replaces ctx.runAction.
-      connectors: [email({ send: "stand-in" })],
-      runAction: async (_reference, args) => {
-        if (
-          typeof args === "object" &&
-          args !== null &&
-          "code" in args &&
-          typeof args.code === "string"
-        ) {
-          codes.push(args.code);
-        }
-        return null;
-      },
-    });
-    const { clientId } = await h.registerClient({
-      appName: "Stranger",
-      firstParty: false,
-      redirectUri: REDIRECT_URI,
-    });
-    const { challenge } = await pkce();
-    const page = await h.fetchBroker(authorizeUrl(h, { clientId, challenge }));
-    const cookie = (page.headers.get("set-cookie") ?? "").split(";")[0] ?? "";
-    const choose = (await page.text()).match(/href="([^"]*connector=email)"/)?.[1] ?? "";
-    const chooseUrl = `${ISSUER}${choose.replace(/&amp;/g, "&")}`;
-    const requestId = new URL(chooseUrl).searchParams.get("request") ?? "";
-    expect((await h.fetchBroker(chooseUrl, { headers: { Cookie: cookie } })).status).toBe(200);
-    const post = (fields: Record<string, string>, headers: Record<string, string>) =>
-      h.fetchBroker(`${ISSUER}/connectors/email`, {
-        method: "POST",
-        headers: { "Content-Type": "application/x-www-form-urlencoded", ...headers },
-        body: new URLSearchParams({ request: requestId, ...fields }).toString(),
-      });
-
-    expect((await post({ step: "send", email: "a@b.co" }, {})).status).toBe(400);
-    expect(codes).toHaveLength(0);
-    expect((await post({ step: "send", email: "a@b.co" }, { Cookie: cookie })).status).toBe(200);
-    expect(codes).toHaveLength(1);
-
-    const refused = await post({ step: "verify", code: codes[0] ?? "" }, {});
-    expect(refused.status).toBe(400);
-    expect(refused.headers.get("location")).toBeNull();
-    expect(await h.t.query(api.authRequests.get, { requestId })).toMatchObject({
-      status: "emailSent",
-      emailAttempts: 0,
-    });
-
-    const ok = await post({ step: "verify", code: codes[0] ?? "" }, { Cookie: cookie });
-    expect(ok.status).toBe(302);
-    expect(new URL(ok.headers.get("location") ?? "").searchParams.get("code")).toBeTruthy();
-    expect(ok.headers.get("set-cookie")).toBe(
-      `__Host-broker_txn_${requestId}=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0`,
-    );
-  });
-
-  test("the fifth miss locks the request", async () => {
-    const sent: Array<{ code: string }> = [];
-    const send = { functionHandle: "test" } as unknown;
-    const h = await createHarness({
-      // @ts-expect-error a stand-in function reference; the harness replaces ctx.runAction.
-      connectors: [email({ send })],
-      runAction: async (_reference, args) => {
-        sent.push(args as { code: string });
-        return null;
-      },
-    });
-    const { clientId } = await h.registerClient({
-      appName: "Bristol",
-      firstParty: true,
-      redirectUri: REDIRECT_URI,
-    });
-    const { challenge } = await pkce();
-    const requestId =
-      (await (await h.fetchBroker(authorizeUrl(h, { clientId, challenge }))).text()).match(
-        /name="request" value="([^"]+)"/,
-      )?.[1] ?? "";
-    const post = (fields: Record<string, string>) =>
-      h.fetchBroker(`${ISSUER}/connectors/email`, {
-        method: "POST",
-        headers: { "Content-Type": "application/x-www-form-urlencoded" },
-        body: new URLSearchParams({ request: requestId, ...fields }).toString(),
-      });
-    await post({ step: "send", email: "a@b.co" });
-    const wrongCode = sent[0]?.code === "000000" ? "111111" : "000000";
-    let last: Response | undefined;
-    for (let attempt = 0; attempt < 5; attempt++) {
-      last = await post({ step: "verify", code: wrongCode });
-    }
-    expect(last?.status).toBe(302);
-    expect(new URL(last?.headers.get("location") ?? "").searchParams.get("error")).toBe(
-      "access_denied",
-    );
-    const requests = await h.t.query(api.authRequests.get, { requestId });
-    expect(requests?.status).toBe("emailSent");
-  });
-});
-
-describe("email send limits", () => {
-  /**
-   * A first-party app with only the email connector, and a clock the test moves. `codes` collects
-   * every code sent; `signIn` starts one sign-in and returns a poster for its email form.
-   */
-  async function emailSetup() {
-    const clock = { now: Date.now() };
-    vi.spyOn(Date, "now").mockImplementation(() => clock.now);
-    const codes: string[] = [];
-    const h = await createHarness({
-      // @ts-expect-error a stand-in function reference; the harness replaces ctx.runAction.
-      connectors: [email({ send: "stand-in" })],
-      runAction: async (_reference, args) => {
-        if (
-          typeof args === "object" &&
-          args !== null &&
-          "code" in args &&
-          typeof args.code === "string"
-        ) {
-          codes.push(args.code);
-        }
-        return null;
-      },
-    });
-    const { clientId } = await h.registerClient({
-      appName: "Bristol",
-      firstParty: true,
-      redirectUri: REDIRECT_URI,
-    });
-    async function signIn() {
-      const { challenge } = await pkce();
-      const page = await h.fetchBroker(authorizeUrl(h, { clientId, challenge }));
-      const requestId = (await page.text()).match(/name="request" value="([^"]+)"/)?.[1] ?? "";
-      return (fields: Record<string, string>) =>
-        h.fetchBroker(`${ISSUER}/connectors/email`, {
-          method: "POST",
-          headers: { "Content-Type": "application/x-www-form-urlencoded" },
-          body: new URLSearchParams({ request: requestId, ...fields }).toString(),
-        });
-    }
-    return { clock, codes, signIn };
-  }
-
-  test("a second send inside 60 seconds is refused with 429 on the same page", async () => {
-    const { clock, codes, signIn } = await emailSetup();
-    const post = await signIn();
-    expect((await post({ step: "send", email: "a@b.co" })).status).toBe(200);
-    clock.now += 59_000;
-    const refused = await post({ step: "send", email: "a@b.co" });
-    expect(refused.status).toBe(429);
-    const html = await refused.text();
-    expect(html).toContain("Check your email");
-    expect(html).toContain("Wait a minute before asking for another code.");
-    expect(codes).toHaveLength(1);
-    clock.now += 1_000;
-    expect((await post({ step: "send", email: "a@b.co" })).status).toBe(200);
-    expect(codes).toHaveLength(2);
-  });
-
-  test("a fourth send for one request is refused", async () => {
-    const { clock, codes, signIn } = await emailSetup();
-    const post = await signIn();
-    for (let send = 0; send < 3; send++) {
-      expect((await post({ step: "send", email: "a@b.co" })).status).toBe(200);
-      clock.now += 60_000;
-    }
-    const refused = await post({ step: "send", email: "a@b.co" });
-    expect(refused.status).toBe(429);
-    expect(await refused.text()).toContain("Too many codes were sent. Try again later.");
-    expect(codes).toHaveLength(3);
-  });
-
-  test("a sixth send to one address within an hour is refused across two requests", async () => {
-    const { clock, codes, signIn } = await emailSetup();
-    const first = await signIn();
-    const second = await signIn();
-    for (const post of [first, first, first, second, second]) {
-      expect((await post({ step: "send", email: "a@b.co" })).status).toBe(200);
-      clock.now += 60_000;
-    }
-    const refused = await second({ step: "send", email: "A@b.co" });
-    expect(refused.status).toBe(429);
-    expect(await refused.text()).toContain("Too many codes were sent. Try again later.");
-    expect(codes).toHaveLength(5);
-    // The same request can still send to another address.
-    expect((await second({ step: "send", email: "c@d.co" })).status).toBe(200);
-  });
-
-  test("attempts do not reset after a resend", async () => {
-    const { clock, codes, signIn } = await emailSetup();
-    const post = await signIn();
-    await post({ step: "send", email: "a@b.co" });
-    const wrong = (code: string | undefined) => (code === "000000" ? "111111" : "000000");
-    for (let attempt = 0; attempt < 4; attempt++) {
-      expect(await (await post({ step: "verify", code: wrong(codes[0]) })).text()).toContain(
-        "not right",
-      );
-    }
-    clock.now += 60_000;
-    expect((await post({ step: "send", email: "a@b.co" })).status).toBe(200);
-    const locked = await post({ step: "verify", code: wrong(codes[1]) });
-    expect(locked.status).toBe(302);
-    expect(new URL(locked.headers.get("location") ?? "").searchParams.get("error")).toBe(
-      "access_denied",
-    );
-    // A locked request sends no more codes.
-    clock.now += 60_000;
-    const resend = await post({ step: "send", email: "a@b.co" });
-    expect(new URL(resend.headers.get("location") ?? "").searchParams.get("error")).toBe(
-      "access_denied",
-    );
-    expect(codes).toHaveLength(2);
-  });
-});
-
 describe("cleanup", () => {
   test("drops expired requests, codes and tokens and old audit rows; idle preview clients only when asked", async () => {
     const h = await createHarness({ connectors: [fakeUpstream().connector] });
@@ -1364,7 +1095,6 @@ describe("cleanup", () => {
       registrationTokens: 1,
       previewClients: 0,
       signIns: 1,
-      emailSends: 0,
     });
     expect(await clientIds()).toEqual(["preview-new", "preview-old", "prod-old"]);
     // With it, the preview client idle longer goes; the production client stays.
@@ -1380,7 +1110,6 @@ describe("cleanup", () => {
       registrationTokens: 0,
       previewClients: 1,
       signIns: 0,
-      emailSends: 0,
     });
     expect(await clientIds()).toEqual(["preview-new", "prod-old"]);
   });
@@ -1429,27 +1158,6 @@ describe("cleanup", () => {
         }),
       ).toThrow("previewClientIdleDays must be a positive number of days");
     }
-  });
-
-  test("one call drains a table that holds more than one batch", async () => {
-    const h = await createHarness({ connectors: [fakeUpstream().connector] });
-    vi.useFakeTimers();
-    const now = Date.now();
-    await h.t.run(async (ctx) => {
-      for (let row = 0; row < 450; row++) {
-        await ctx.db.insert("emailSends", { emailHash: `hash-${row}`, at: now - 2 * 3_600_000 });
-      }
-      await ctx.db.insert("emailSends", { emailHash: "recent", at: now });
-    });
-    const counts = await h.t.mutation(api.lifecycle.cleanup, {
-      now,
-      previewClientMaxAgeMs: 30 * 86_400_000,
-      signInRetentionMs: 90 * 86_400_000,
-    });
-    expect(counts.emailSends).toBe(200);
-    await h.t.finishAllScheduledFunctions(vi.runAllTimers);
-    const left = await h.t.run(async (ctx) => await ctx.db.query("emailSends").collect());
-    expect(left.map((row) => row.emailHash)).toEqual(["recent"]);
   });
 
   test("one call drains more expired requests than the 51 batches 0.4.0 stopped after", async () => {

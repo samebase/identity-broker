@@ -33,8 +33,6 @@ export async function createHarness(options: {
   issuer?: string;
   keySet?: KeySet;
   previewClientIdleDays?: number;
-  /** Replaces `ctx.runAction` for the request, to capture the email code send. */
-  runAction?: (reference: unknown, args: unknown) => Promise<unknown>;
 }) {
   const t = convexTest(schema, modules);
   const keySet = options.keySet ?? (await createKeySet());
@@ -63,9 +61,6 @@ export async function createHarness(options: {
     const body = method === "GET" ? undefined : await request.text();
     const headers = Object.fromEntries(request.headers.entries());
     const result = await t.action(async (ctx) => {
-      if (options.runAction !== undefined) {
-        vi.spyOn(ctx, "runAction").mockImplementation(options.runAction as typeof ctx.runAction);
-      }
       const replay = new Request(
         url,
         body === undefined ? { method, headers } : { method, headers, body },

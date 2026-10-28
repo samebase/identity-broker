@@ -1,7 +1,6 @@
 import { v, type Infer } from "convex/values";
 import { internal } from "./_generated/api";
 import { internalMutation, mutation, type MutationCtx } from "./_generated/server";
-import { EMAIL_SEND_WINDOW_MS } from "./authRequests";
 
 const { number, object, optional } = v;
 
@@ -21,7 +20,6 @@ const vCleanupCounts = object({
   registrationTokens: number(),
   previewClients: number(),
   signIns: number(),
-  emailSends: number(),
 });
 
 /**
@@ -85,21 +83,12 @@ async function cleanupBatch(
     await ctx.db.delete("signIns", signIn._id);
   }
 
-  const emailSends = await ctx.db
-    .query("emailSends")
-    .withIndex("by_at", (q) => q.lt("at", args.now - EMAIL_SEND_WINDOW_MS))
-    .take(BATCH);
-  for (const emailSend of emailSends) {
-    await ctx.db.delete("emailSends", emailSend._id);
-  }
-
   const counts = {
     authRequests: requests.length,
     authorizationCodes: codes.length,
     registrationTokens: tokens.length,
     previewClients: previewClients.length,
     signIns: signIns.length,
-    emailSends: emailSends.length,
   };
   if (Object.values(counts).some((count) => count === BATCH)) {
     await ctx.scheduler.runAfter(0, internal.lifecycle.continueCleanup, {
@@ -113,10 +102,10 @@ async function cleanupBatch(
 
 /**
  * Deletes what has run out: expired requests, codes and registration tokens, preview clients
- * nobody used for `previewClientMaxAgeMs` when the host passes it, audit rows older than
- * `signInRetentionMs`, and email send rows outside the send window. The host schedules this daily
- * from a cron; production and development clients are never touched. The counts are this call's
- * batch: a full batch schedules the next one, so one call drains everything older than `now`.
+ * nobody used for `previewClientMaxAgeMs` when the host passes it, and audit rows older than
+ * `signInRetentionMs`. The host schedules this daily from a cron; production and development
+ * clients are never touched. The counts are this call's batch: a full batch schedules the next
+ * one, so one call drains everything older than `now`.
  */
 export const cleanup = mutation({
   args: vCleanupArgs,

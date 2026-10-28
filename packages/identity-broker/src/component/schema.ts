@@ -18,8 +18,8 @@ export const vDeploymentType = union(
 
 /**
  * What a connector attested about the user. `upstreamId` is the connector's own stable id for the
- * account (the GitHub user id, the OIDC `sub`, the canonical email address). The pairwise subject
- * is derived from it on the host, where the salt lives.
+ * account (the GitHub user id, the OIDC `sub`). The pairwise subject is derived from it on the
+ * host, where the salt lives.
  */
 export const vUpstreamIdentity = object({
   connector: string(),
@@ -43,9 +43,9 @@ const authRequestFields = {
   /** `prompt=login` or `max_age` was sent: the connector must reauthenticate or refuse. */
   freshLogin: boolean(),
   /**
-   * SHA-256 hex of the request's transaction cookie, set with the chooser page. `/continue`, the
-   * connector callback, and the email steps need the cookie, so only the browser that saw the
-   * chooser can move the request on. Absent when /authorize skipped the chooser.
+   * SHA-256 hex of the request's transaction cookie, set with the chooser page. `/continue` and
+   * the connector callback need the cookie, so only the browser that saw the chooser can move the
+   * request on. Absent when /authorize skipped the chooser.
    */
   txnCookieHash: optional(string()),
   createdAt: number(),
@@ -66,20 +66,6 @@ export const vAuthRequest = union(
   }),
   // The connector callback arrived and the code exchange is running; a replay finds this and stops.
   object({ status: literal("claimed"), ...authRequestFields, connector: string() }),
-  // An email code was sent; the user types it. A resend replaces the code and keeps the counts.
-  object({
-    status: literal("emailSent"),
-    ...authRequestFields,
-    connector: string(),
-    email: string(),
-    emailCodeHash: string(),
-    emailCodeExpiresAt: number(),
-    /** Wrong codes typed, across every code sent for this request. */
-    emailAttempts: number(),
-    /** Codes sent for this request. */
-    emailSends: number(),
-    emailLastSentAt: number(),
-  }),
   // The connector attested the identity; the authorization code points here until it is exchanged.
   object({
     status: literal("completed"),
@@ -139,15 +125,6 @@ export default defineSchema({
   })
     .index("by_code_hash", ["codeHash"])
     .index("by_expires_at", ["expiresAt"]),
-
-  /** One row per email code sent, kept for the rolling send window; no address, only its hash. */
-  emailSends: defineTable({
-    /** SHA-256 hex of the canonical address. */
-    emailHash: string(),
-    at: number(),
-  })
-    .index("by_email_hash_and_at", ["emailHash", "at"])
-    .index("by_at", ["at"]),
 
   signIns: defineTable({
     appId: string(),

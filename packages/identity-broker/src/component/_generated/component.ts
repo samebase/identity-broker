@@ -249,28 +249,6 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
           }
         | {
             appId: string;
-            clientId: string;
-            codeChallenge: string;
-            connector: string;
-            createdAt: number;
-            email: string;
-            emailAttempts: number;
-            emailCodeExpiresAt: number;
-            emailCodeHash: string;
-            emailLastSentAt: number;
-            emailSends: number;
-            expiresAt: number;
-            freshLogin: boolean;
-            nonce?: string;
-            redirectUri: string;
-            requestId: string;
-            scope: string;
-            state?: string;
-            status: "emailSent";
-            txnCookieHash?: string;
-          }
-        | {
-            appId: string;
             authTime: number;
             clientId: string;
             codeChallenge: string;
@@ -296,36 +274,6 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         | null,
         Name
       >;
-      startEmail: FunctionReference<
-        "mutation",
-        "internal",
-        {
-          connector: string;
-          email: string;
-          emailCodeExpiresAt: number;
-          emailCodeHash: string;
-          emailHash: string;
-          maxAttempts: number;
-          now: number;
-          requestId: string;
-        },
-        | { ok: true; redirectUri: string; state?: string }
-        | {
-            error:
-              | "expired"
-              | "wrong_status"
-              | "locked"
-              | "too_soon"
-              | "request_limit"
-              | "address_limit"
-              | "global_limit";
-            ok: false;
-            redirectUri: string;
-            state?: string;
-          }
-        | { error: "not_found"; ok: false },
-        Name
-      >;
       startUpstream: FunctionReference<
         "mutation",
         "internal",
@@ -340,32 +288,6 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         | { ok: true; redirectUri: string; state?: string }
         | {
             error: "expired" | "wrong_status";
-            ok: false;
-            redirectUri: string;
-            state?: string;
-          }
-        | { error: "not_found"; ok: false },
-        Name
-      >;
-      verifyEmailCode: FunctionReference<
-        "mutation",
-        "internal",
-        {
-          codeExpiresAt: number;
-          codeHash: string;
-          emailCodeHash: string;
-          maxAttempts: number;
-          now: number;
-          requestId: string;
-        },
-        | { ok: true; redirectUri: string; state?: string }
-        | {
-            error:
-              | "wrong_code"
-              | "locked"
-              | "code_expired"
-              | "expired"
-              | "wrong_status";
             ok: false;
             redirectUri: string;
             state?: string;
@@ -455,7 +377,6 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         {
           authRequests: number;
           authorizationCodes: number;
-          emailSends: number;
           previewClients: number;
           registrationTokens: number;
           signIns: number;

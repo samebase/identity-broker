@@ -1,5 +1,3 @@
-import type { FunctionReference } from "convex/server";
-
 /** What a connector attested about the user. `upstreamId` is the connector's stable account id. */
 export type UpstreamIdentity = {
   upstreamId: string;
@@ -41,19 +39,4 @@ export type OidcConnector = Credentials & {
   promptLogin: boolean;
 };
 
-/** The host action that delivers a code. The broker never sees how. */
-export type SendEmailCode = FunctionReference<
-  "action",
-  "internal",
-  { to: string; code: string; appName: string },
-  null
->;
-
-export type EmailConnector = {
-  kind: "email";
-  name: string;
-  label: string;
-  send: SendEmailCode;
-};
-
-export type Connector = OauthConnector | OidcConnector | EmailConnector;
+export type Connector = OauthConnector | OidcConnector;
