@@ -23,7 +23,8 @@ export const { startSignIn: startSignInWithHub, completeSignIn: completeSignInWi
     auth,
     "hub",
     {
-      authorizationEndpoint: `${HUB}/authorize`,
+      // The hub has no page to choose a connector: the authorize URL names one.
+      authorizationEndpoint: `${HUB}/authorize?connector=google`,
       tokenEndpoint: `${HUB}/token`,
       issuer: HUB,
       scopes: ["openid", "email", "profile"],
@@ -46,11 +47,11 @@ Register the deployment once, after it exists, with the app's registration token
 ```sh
 curl -sS -X POST "$HUB/register" \
   -H "Authorization: Bearer $HUB_REGISTRATION_TOKEN" -H "Content-Type: application/json" \
-  -d "{\"redirect_uris\":[\"$CONVEX_SITE_URL/oauth/hub/callback\"],\"client_name\":\"Bristol\",\"software_version\":\"$DEPLOYMENT\",\"deployment_type\":\"preview\",\"token_endpoint_auth_method\":\"client_secret_post\"}"
+  -d "{\"redirect_uris\":[\"$CONVEX_SITE_URL/oauth/hub/callback\"],\"token_endpoint_auth_method\":\"client_secret_post\"}"
 ```
 
-`client_secret_post` because Convex Auth's generic OAuth method posts the client credentials in the
-body; without it the client gets the RFC 7591 default, `client_secret_basic`.
+`client_secret_post` is required: it is the hub's only client authentication, and Convex Auth's
+generic OAuth method posts the client credentials in the body.
 
 Store the returned `client_id` and `client_secret` on that deployment as `HUB_CLIENT_ID` and
 `HUB_CLIENT_SECRET` (`npx convex env set --deployment <name> ...`). Keep the registration token in
@@ -67,9 +68,17 @@ In an Alchemy v2 stack, the `IdentityHub.Client` resource of `@samebase/alchemy-
 these requests: it registers at deploy time and deletes on destroy. `Convex.EnvironmentVariable`
 stores the client on the deployment.
 
-The `connector` query parameter on `/authorize` (`connector=github`) skips the chooser for a
-first-party app. Each app sees its own pairwise `sub`.
+## The connector and the claims
 
-Each app owns admission and account linking by email. `connector=google` in the authorize URL
-selects a connector for the chooser skip and does not enforce a Google-only policy; the app's
-admission does.
+The `connector` query parameter on `/authorize` names the connector, such as `connector=github`. A
+missing or unknown name comes back to the redirect URI as `invalid_request`.
+
+- `sub` is pairwise: each app sees its own.
+- `connector` and `connector_account_id` are the connector's name and its own id for the account:
+  the GitHub user id, or Google's `sub`. An app whose existing users are keyed by provider and
+  account id maps them by this pair. The pair is the same in every app of the hub.
+- `email` and `email_verified` come with the `email` scope, `name` and `picture` with `profile`.
+
+Each app owns admission and account linking by email. A user can edit the authorize URL, so
+`connector=google` does not enforce a Google-only policy: an app that admits one provider checks the
+`connector` claim.
