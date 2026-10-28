@@ -37,6 +37,16 @@ than 401.
 per table, each scheduling the next at once. Registration, `/authorize` and `/token` refuse a token
 or client whose app is gone, so the first transaction revokes them all.
 
+## Token endpoint
+
+A client authenticates with the one method it registered, `client_secret_basic` or
+`client_secret_post`. A request that carries an `Authorization` header and a non-empty
+`client_secret` in the body answers `invalid_request`, even when both are right (RFC 6749 section
+2.3.1); an empty parameter counts as omitted (section 3.2). The mutation that redeems the
+authorization code also reads the client and its app and checks the secret and the method, so a
+deletion of either commits wholly before a redemption or after it, a failed authentication leaves
+the code redeemable, and a code redeems once.
+
 ## Issuer
 
 The supported configuration is a dedicated hostname with the issuer at `/`, such as
@@ -62,6 +72,13 @@ App ids and connector names are identity namespaces. Recreating an app (a new ap
 connector changes every `sub` it produces. The salt lives only in `IDENTITY_BROKER_KEYS`, so back up
 the key set: a lost salt cannot be recreated.
 
+Every id_token and every UserInfo response also carry `connector`, the connector's name. Those of a
+first-party app carry `connector_account_id` too: the connector's own id for the account, the GitHub
+user id, the upstream OIDC `sub`, or the canonical address for the email connector. An app whose
+users are keyed by provider and account id maps them by this pair. The pair is as stable as the
+provider's id: a new address is a new email account, and an upstream OIDC provider with pairwise
+subjects gives the hub other ids than it gave an app's own client.
+
 ## Named departures from the specifications
 
 - No refresh tokens, no `offline_access`: apps keep their own sessions.
@@ -79,6 +96,10 @@ the key set: a lost salt cannot be recreated.
   values, such as `consent` and `select_account`, answer `invalid_request`.
 - Pairwise subjects use the app, not a `sector_identifier_uri`, as the sector, so previews on random
   hosts keep the same subjects.
+- `connector_account_id` goes to first-party apps only, the same in each and with every scope. Those
+  apps can correlate a user with each other and with the provider account, which pairwise subjects
+  (OIDC Core 8.1) exist to prevent, and for the email connector it is the address, even without the
+  `email` scope. A third-party app gets only the pairwise `sub`, the stable id its consent names.
 - Dynamically registered clients inherit the trust of their app: a first-party app's deployments
   skip the chooser and consent, because every deployment of a first-party app registers dynamically.
 - No loopback exception on redirect URIs: a local deployment registers its exact

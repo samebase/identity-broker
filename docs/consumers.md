@@ -70,6 +70,12 @@ stores the client on the deployment.
 The `connector` query parameter on `/authorize` (`connector=github`) skips the chooser for a
 first-party app. Each app sees its own pairwise `sub`.
 
+The id_token also carries `connector`, the connector's name, and for a first-party app
+`connector_account_id`, the connector's own id for the account. For GitHub and Google that is the
+provider's own user id or `sub`, the one an app saw when it signed users in to GitHub or Google
+directly, so an app whose existing users are keyed by provider and account id maps them by this
+pair. The pair is the same in every first-party app of the hub.
+
 Each app owns admission and account linking by email. `connector=google` in the authorize URL
 selects a connector for the chooser skip and does not enforce a Google-only policy; the app's
 admission does.

@@ -13,7 +13,8 @@ registers each deployment as a client at deploy time and never touches GitHub or
 
 - `@samebase/identity-broker`: a Convex component plus the host-side endpoints. Authorization code
   flow with PKCE, discovery, JWKS, dynamic client registration (RFC 7591) gated by per-app tokens,
-  userinfo. RS256 `id_token`s with pairwise subjects per app.
+  userinfo. RS256 `id_token`s with pairwise subjects per app; a first-party app also gets the
+  connector's own id for the account in `connector_account_id`.
 - Connectors are configuration: any OAuth 2.0 or OpenID Connect provider, and an email code sent by
   your own action. `github()`, `google()` and `email()` are included.
 - A hub is a small Convex app that mounts the component. Fork
