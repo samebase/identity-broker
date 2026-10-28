@@ -435,6 +435,13 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         null,
         Name
       >;
+      unregister: FunctionReference<
+        "mutation",
+        "internal",
+        { appId: string; clientId: string },
+        boolean,
+        Name
+      >;
     };
     lifecycle: {
       cleanup: FunctionReference<

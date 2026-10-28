@@ -63,7 +63,11 @@ export { assertKeySetUsable } from "./jwt.js";
 export type IdentityBrokerConfig = {
   /** `components.identityBroker` of the host app. */
   component: ComponentApi;
-  /** The issuer URL, host-only or with a path, e.g. `https://auth.example.com`. */
+  /**
+   * The issuer URL. Supported: a dedicated hostname with the issuer at `/`, e.g.
+   * `https://auth.example.com`, where the transaction cookies carry the `__Host-` prefix. An issuer
+   * under a path uses plain cookies and is not verified in browsers.
+   */
   issuer: string;
   /** The content of `IDENTITY_BROKER_KEYS`, read in the request. */
   keys: () => string | undefined;
@@ -773,23 +777,39 @@ export function defineIdentityBroker(config: IdentityBrokerConfig) {
     return errorPage("Invalid form", "Unknown step.", 400);
   });
 
-  const register = httpActionGeneric(async (ctx, request) => {
+  /** The app of a registration token, or its 401. */
+  async function registrationApp(ctx: Ctx, request: Request, now: number) {
     const token = readBearerToken(request.headers.get("authorization"));
     if (token === null) {
-      return oauthError(
-        401,
-        "invalid_token",
-        "A registration token is required as a Bearer token.",
-      );
+      return {
+        ok: false,
+        response: oauthError(
+          401,
+          "invalid_token",
+          "A registration token is required as a Bearer token.",
+        ),
+      } as const;
     }
-    const now = Date.now();
     const app = await ctx.runQuery(component.registration.readToken, {
       tokenHash: await sha256Hex(token),
       now,
     });
     if (app === null) {
-      return oauthError(401, "invalid_token", "The registration token is unknown or expired.");
+      return {
+        ok: false,
+        response: oauthError(401, "invalid_token", "The registration token is unknown or expired."),
+      } as const;
     }
+    return { ok: true, app } as const;
+  }
+
+  const register = httpActionGeneric(async (ctx, request) => {
+    const now = Date.now();
+    const auth = await registrationApp(ctx, request, now);
+    if (!auth.ok) {
+      return auth.response;
+    }
+    const { app } = auth;
     let payload: unknown;
     try {
       payload = await request.json();
@@ -840,6 +860,33 @@ export function defineIdentityBroker(config: IdentityBrokerConfig) {
     );
   });
 
+  const registerPrefix = path("/register/");
+
+  /**
+   * `DELETE <prefix>/register/<client_id>` deletes a client of the token's app, of any deployment
+   * type. The segment is compared as sent: `/register` issues `cl_` and base64url, which a path
+   * carries as is. A client that is gone and a client of another app both answer 404, never 403,
+   * so a token learns nothing about another app's clients.
+   */
+  const unregister = httpActionGeneric(async (ctx, request) => {
+    const auth = await registrationApp(ctx, request, Date.now());
+    if (!auth.ok) {
+      return auth.response;
+    }
+    const deleted = await ctx.runMutation(component.clients.unregister, {
+      clientId: new URL(request.url).pathname.slice(registerPrefix.length),
+      appId: auth.app.appId,
+    });
+    if (!deleted) {
+      return oauthError(
+        404,
+        "invalid_client",
+        "No client with this id belongs to the app of this registration token.",
+      );
+    }
+    return new Response(null, { status: 204 });
+  });
+
   const token = httpActionGeneric(async (ctx, request) => {
     const contentType = request.headers.get("content-type")?.toLowerCase() ?? "";
     if (!contentType.startsWith("application/x-www-form-urlencoded")) {
@@ -870,10 +917,13 @@ export function defineIdentityBroker(config: IdentityBrokerConfig) {
     const client = await ctx.runQuery(component.clients.get, {
       clientId: clientAuth.value.clientId,
     });
+    // A client whose app is deleted is refused at once: deleteApp deletes the app row first and
+    // the app's clients in later batches.
     if (
       client === null ||
       client.tokenEndpointAuthMethod !== clientAuth.value.method ||
-      client.secretHash !== (await sha256Hex(clientAuth.value.clientSecret))
+      client.secretHash !== (await sha256Hex(clientAuth.value.clientSecret)) ||
+      (await readApp(ctx, client.appId)) === null
     ) {
       return oauthError(401, "invalid_client", "Client authentication failed.", challenge);
     }
@@ -974,6 +1024,7 @@ export function defineIdentityBroker(config: IdentityBrokerConfig) {
       http.route({ path: path("/authorize"), method: "POST", handler: authorize });
       http.route({ path: path("/continue"), method: "GET", handler: continueSignIn });
       http.route({ path: path("/register"), method: "POST", handler: register });
+      http.route({ pathPrefix: registerPrefix, method: "DELETE", handler: unregister });
       http.route({ path: path("/token"), method: "POST", handler: token });
       http.route({ path: path("/userinfo"), method: "GET", handler: userinfo });
       http.route({ path: path("/userinfo"), method: "POST", handler: userinfo });

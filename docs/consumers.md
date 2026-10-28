@@ -29,7 +29,10 @@ export const { startSignIn: startSignInWithHub, completeSignIn: completeSignInWi
       scopes: ["openid", "email", "profile"],
       profile: (claims) => ({
         id: claims.sub,
-        email: typeof claims.email === "string" ? claims.email : undefined,
+        email:
+          claims.email_verified === true && typeof claims.email === "string"
+            ? claims.email
+            : undefined,
         name: typeof claims.name === "string" ? claims.name : undefined,
       }),
     },
@@ -53,8 +56,20 @@ Store the returned `client_id` and `client_secret` on that deployment as `HUB_CL
 `HUB_CLIENT_SECRET` (`npx convex env set --deployment <name> ...`). Keep the registration token in
 CI secrets next to the deploy key, never in a deployment's env.
 
+When the deployment goes away, delete its client with a token of the same app (204, or 404 for a
+client that is already gone):
+
+```sh
+curl -sS -X DELETE "$HUB/register/$HUB_CLIENT_ID" -H "Authorization: Bearer $HUB_REGISTRATION_TOKEN"
+```
+
 In an Alchemy v2 stack, the `IdentityHub.Client` resource of `@samebase/alchemy-identity-hub` makes
-this request at deploy time, and `Convex.EnvironmentVariable` stores the client on the deployment.
+these requests: it registers at deploy time and deletes on destroy. `Convex.EnvironmentVariable`
+stores the client on the deployment.
 
 The `connector` query parameter on `/authorize` (`connector=github`) skips the chooser for a
-first-party app. Each app sees its own pairwise `sub`; the `email` claim is the app's to use or not.
+first-party app. Each app sees its own pairwise `sub`.
+
+Each app owns admission and account linking by email. `connector=google` in the authorize URL
+selects a connector for the chooser skip and does not enforce a Google-only policy; the app's
+admission does.

@@ -9,10 +9,7 @@ export const vTokenEndpointAuthMethod = union(
   literal("client_secret_basic"),
 );
 
-/**
- * The deployment a client stands for. Preview clients are pruned when the host sets
- * `previewClientIdleDays`; every other client is deleted by hand.
- */
+/** The deployment a client stands for. */
 export const vDeploymentType = union(
   literal("production"),
   literal("development"),

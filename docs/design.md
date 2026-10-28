@@ -13,11 +13,37 @@ nothing about a user outlives the request that carried it.
 The host schedules the component's `cleanup` daily from a cron, as the
 [identity-hub](https://github.com/samebase/identity-hub) template does; nothing else deletes these
 rows. One run drains: a batch deletes at most 200 rows per table, and a full batch schedules the
-next one at once, up to 50 more batches per run. A completed request lives until one minute after
-its authorization code expires, so cleanup never removes a request whose code can still be redeemed.
-Clients stay until `deleteClient` removes them. A host that sets `previewClientIdleDays` also has
-cleanup delete a preview client with no sign-in for that many days. It is off by default, because a
-deployment whose client was deleted does not register again by itself.
+next one at once with the same cutoff, until no table fills a batch. The cutoff is the time the run
+began, so the run ends: rows written during it run out after the cutoff. A completed request lives
+until one minute after its authorization code expires, so cleanup never removes a request whose code
+can still be redeemed.
+
+Clients stay until `DELETE /register/<client_id>` or `deleteClient` removes them, or their app is
+deleted. A host that sets `previewClientIdleDays` also has cleanup delete a preview client with no
+sign-in for that many days. It is off by default, because a deployment whose client was deleted does
+not register again by itself.
+
+## Registration
+
+`POST /register` (RFC 7591) registers one deployment of an app as a client, with the app's
+registration token as a Bearer token. `DELETE /register/<client_id>` with a token of the same app
+deletes that client, of any deployment type, and answers 204. A missing, unknown or expired token
+answers 401. A client that is gone and a client of another app both answer 404, not 403, so a token
+learns nothing about another app's clients. The delete has the shape of RFC 7592's, which the broker
+does not implement: no registration access token per client, and a missing client answers 404 rather
+than 401.
+
+`deleteApp` deletes the app row first, then its registration tokens and clients in batches of 200
+per table, each scheduling the next at once. Registration, `/authorize` and `/token` refuse a token
+or client whose app is gone, so the first transaction revokes them all.
+
+## Issuer
+
+The supported configuration is a dedicated hostname with the issuer at `/`, such as
+`https://auth.example.com`. There the transaction cookies carry the `__Host-` prefix, so no other
+path or subdomain can set or shadow them. An issuer under a path, such as
+`https://example.com/identity`, uses plain cookies scoped to that path, and is not verified in
+browsers.
 
 ## Email send limits
 
