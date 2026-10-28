@@ -493,6 +493,114 @@ describe("email connector", () => {
   });
 });
 
+describe("email send limits", () => {
+  /**
+   * A first-party app with only the email connector, and a clock the test moves. `codes` collects
+   * every code sent; `signIn` starts one sign-in and returns a poster for its email form.
+   */
+  async function emailSetup() {
+    const clock = { now: Date.now() };
+    vi.spyOn(Date, "now").mockImplementation(() => clock.now);
+    const codes: string[] = [];
+    const h = await createHarness({
+      // @ts-expect-error a stand-in function reference; the harness replaces ctx.runAction.
+      connectors: [email({ send: "stand-in" })],
+      runAction: async (_reference, args) => {
+        if (
+          typeof args === "object" &&
+          args !== null &&
+          "code" in args &&
+          typeof args.code === "string"
+        ) {
+          codes.push(args.code);
+        }
+        return null;
+      },
+    });
+    const { clientId } = await h.registerClient({
+      appName: "Bristol",
+      firstParty: true,
+      redirectUri: REDIRECT_URI,
+    });
+    async function signIn() {
+      const { challenge } = await pkce();
+      const page = await h.fetchBroker(authorizeUrl(h, { clientId, challenge }));
+      const requestId = (await page.text()).match(/name="request" value="([^"]+)"/)?.[1] ?? "";
+      return (fields: Record<string, string>) =>
+        h.fetchBroker(`${ISSUER}/connectors/email`, {
+          method: "POST",
+          headers: { "Content-Type": "application/x-www-form-urlencoded" },
+          body: new URLSearchParams({ request: requestId, ...fields }).toString(),
+        });
+    }
+    return { clock, codes, signIn };
+  }
+
+  test("a second send inside 60 seconds is refused with 429 on the same page", async () => {
+    const { clock, codes, signIn } = await emailSetup();
+    const post = await signIn();
+    expect((await post({ step: "send", email: "a@b.co" })).status).toBe(200);
+    clock.now += 59_000;
+    const refused = await post({ step: "send", email: "a@b.co" });
+    expect(refused.status).toBe(429);
+    const html = await refused.text();
+    expect(html).toContain("Check your email");
+    expect(html).toContain("Wait a minute before asking for another code.");
+    expect(codes).toHaveLength(1);
+    clock.now += 1_000;
+    expect((await post({ step: "send", email: "a@b.co" })).status).toBe(200);
+    expect(codes).toHaveLength(2);
+  });
+
+  test("a fourth send for one request is refused", async () => {
+    const { clock, codes, signIn } = await emailSetup();
+    const post = await signIn();
+    for (let send = 0; send < 3; send++) {
+      expect((await post({ step: "send", email: "a@b.co" })).status).toBe(200);
+      clock.now += 60_000;
+    }
+    const refused = await post({ step: "send", email: "a@b.co" });
+    expect(refused.status).toBe(429);
+    expect(await refused.text()).toContain("Too many codes were sent. Try again later.");
+    expect(codes).toHaveLength(3);
+  });
+
+  test("a sixth send to one address within an hour is refused across two requests", async () => {
+    const { clock, codes, signIn } = await emailSetup();
+    const first = await signIn();
+    const second = await signIn();
+    for (const post of [first, first, first, second, second]) {
+      expect((await post({ step: "send", email: "a@b.co" })).status).toBe(200);
+      clock.now += 60_000;
+    }
+    const refused = await second({ step: "send", email: "A@b.co" });
+    expect(refused.status).toBe(429);
+    expect(await refused.text()).toContain("Too many codes were sent. Try again later.");
+    expect(codes).toHaveLength(5);
+    // The same request can still send to another address.
+    expect((await second({ step: "send", email: "c@d.co" })).status).toBe(200);
+  });
+
+  test("attempts do not reset after a resend", async () => {
+    const { clock, codes, signIn } = await emailSetup();
+    const post = await signIn();
+    await post({ step: "send", email: "a@b.co" });
+    const wrong = (code: string | undefined) => (code === "000000" ? "111111" : "000000");
+    for (let attempt = 0; attempt < 4; attempt++) {
+      expect(await (await post({ step: "verify", code: wrong(codes[0]) })).text()).toContain(
+        "not right",
+      );
+    }
+    clock.now += 60_000;
+    expect((await post({ step: "send", email: "a@b.co" })).status).toBe(200);
+    const locked = await post({ step: "verify", code: wrong(codes[1]) });
+    expect(locked.status).toBe(302);
+    expect(new URL(locked.headers.get("location") ?? "").searchParams.get("error")).toBe(
+      "access_denied",
+    );
+  });
+});
+
 describe("cleanup", () => {
   test("drops expired requests and codes, idle preview clients, old audit rows", async () => {
     const h = await createHarness({ connectors: [fakeUpstream().connector] });
@@ -558,6 +666,7 @@ describe("cleanup", () => {
       authorizationCodes: 0,
       previewClients: 1,
       signIns: 1,
+      emailSends: 0,
     });
     const remaining = await h.t.query(api.clients.listByApp, { appId: "a" });
     expect(remaining.map((c) => c.clientId).sort()).toEqual(["preview-new", "prod-old"]);

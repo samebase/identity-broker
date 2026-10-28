@@ -486,22 +486,49 @@ export function defineIdentityBroker(config: IdentityBrokerConfig) {
         requestId,
         connector: emailConnector.name,
         email: address,
+        emailHash: await sha256Hex(address),
         emailCodeHash: await sha256Hex(code),
         emailCodeExpiresAt: now + EMAIL_CODE_TTL_MS,
         now,
       });
       if (!started.ok) {
-        return started.error === "not_found"
-          ? errorPage(
+        switch (started.error) {
+          case "not_found":
+            return errorPage(
               "Sign-in not found",
               "This sign-in is unknown. Return to the app and try again.",
               404,
-            )
-          : authorizationError({
+            );
+          case "expired":
+          case "wrong_status":
+            return authorizationError({
               ...back,
               error: "access_denied",
               description: "The sign-in expired.",
             });
+          case "too_soon":
+          case "request_limit":
+          case "address_limit": {
+            // The page the user is on, with one neutral line: nothing says whether the address is
+            // known, and neither the address nor a code is logged.
+            const error =
+              started.error === "too_soon"
+                ? "Wait a minute before asking for another code."
+                : "Too many codes were sent. Try again later.";
+            return stored.status === "emailSent"
+              ? emailCodePage({
+                  appName: app.name,
+                  action,
+                  requestId,
+                  email: stored.email,
+                  error,
+                  status: 429,
+                })
+              : emailAddressPage({ appName: app.name, action, requestId, error, status: 429 });
+          }
+          default:
+            return started satisfies never;
+        }
       }
       try {
         await ctx.runAction(emailConnector.send, { to: address, code, appName: app.name });

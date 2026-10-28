@@ -241,6 +241,8 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
             emailAttempts: number;
             emailCodeExpiresAt: number;
             emailCodeHash: string;
+            emailLastSentAt: number;
+            emailSends: number;
             expiresAt: number;
             freshLogin: boolean;
             nonce?: string;
@@ -284,12 +286,18 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
           email: string;
           emailCodeExpiresAt: number;
           emailCodeHash: string;
+          emailHash: string;
           now: number;
           requestId: string;
         },
         | { ok: true; redirectUri: string; state?: string }
         | {
-            error: "expired" | "wrong_status";
+            error:
+              | "expired"
+              | "wrong_status"
+              | "too_soon"
+              | "request_limit"
+              | "address_limit";
             ok: false;
             redirectUri: string;
             state?: string;
@@ -419,6 +427,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         {
           authRequests: number;
           authorizationCodes: number;
+          emailSends: number;
           previewClients: number;
           signIns: number;
         },

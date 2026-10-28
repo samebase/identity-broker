@@ -167,18 +167,51 @@ export const claimUpstream = mutation({
   },
 });
 
-/** The user chose the email connector and typed an address; a code was sent to it. */
+/** Codes one request may send. */
+const EMAIL_SENDS_PER_REQUEST = 3;
+/** The least time between two sends of one request. */
+const EMAIL_SEND_INTERVAL_MS = 60 * 1000;
+/** Codes one address may receive in `EMAIL_SEND_WINDOW_MS`, across all requests. */
+const EMAIL_SENDS_PER_ADDRESS = 5;
+/** The rolling window of the per-address count; `lifecycle.cleanup` drops older `emailSends` rows. */
+export const EMAIL_SEND_WINDOW_MS = 60 * 60 * 1000;
+
+const vStartEmailResult = union(
+  object({ ok: literal(true), ...vReturn.fields }),
+  object({
+    ok: literal(false),
+    error: union(
+      literal("expired"),
+      literal("wrong_status"),
+      literal("too_soon"),
+      literal("request_limit"),
+      literal("address_limit"),
+    ),
+    ...vReturn.fields,
+  }),
+  object({ ok: literal(false), error: literal("not_found") }),
+);
+type StartEmailResult = Infer<typeof vStartEmailResult>;
+
+/**
+ * The user chose the email connector and typed an address; a code may be sent to it. A request
+ * sends at most `EMAIL_SENDS_PER_REQUEST` codes, `EMAIL_SEND_INTERVAL_MS` apart, and an address
+ * receives at most `EMAIL_SENDS_PER_ADDRESS` codes per `EMAIL_SEND_WINDOW_MS`. A resend replaces
+ * the code and keeps the attempt count.
+ */
 export const startEmail = mutation({
   args: {
     requestId: string(),
     connector: string(),
     email: string(),
+    /** SHA-256 hex of the canonical address. */
+    emailHash: string(),
     emailCodeHash: string(),
     emailCodeExpiresAt: number(),
     now: number(),
   },
-  returns: vTransitionResult,
-  handler: async (ctx, args): Promise<TransitionResult> => {
+  returns: vStartEmailResult,
+  handler: async (ctx, args): Promise<StartEmailResult> => {
     const request = await findByRequestId(ctx, args.requestId);
     if (request === null) {
       return { ok: false, error: "not_found" };
@@ -187,10 +220,33 @@ export const startEmail = mutation({
     if (request.expiresAt <= args.now) {
       return { ok: false, error: "expired", ...back };
     }
-    // A second send replaces the first code and resets the attempt count.
     if (request.status !== "pending" && request.status !== "emailSent") {
       return { ok: false, error: "wrong_status", ...back };
     }
+    const sent =
+      request.status === "emailSent"
+        ? {
+            sends: request.emailSends,
+            lastSentAt: request.emailLastSentAt,
+            attempts: request.emailAttempts,
+          }
+        : { sends: 0, lastSentAt: undefined, attempts: 0 };
+    if (sent.sends >= EMAIL_SENDS_PER_REQUEST) {
+      return { ok: false, error: "request_limit", ...back };
+    }
+    if (sent.lastSentAt !== undefined && args.now - sent.lastSentAt < EMAIL_SEND_INTERVAL_MS) {
+      return { ok: false, error: "too_soon", ...back };
+    }
+    const recentToAddress = await ctx.db
+      .query("emailSends")
+      .withIndex("by_email_hash_and_at", (q) =>
+        q.eq("emailHash", args.emailHash).gt("at", args.now - EMAIL_SEND_WINDOW_MS),
+      )
+      .take(EMAIL_SENDS_PER_ADDRESS);
+    if (recentToAddress.length >= EMAIL_SENDS_PER_ADDRESS) {
+      return { ok: false, error: "address_limit", ...back };
+    }
+    await ctx.db.insert("emailSends", { emailHash: args.emailHash, at: args.now });
     await ctx.db.replace("authRequests", request._id, {
       status: "emailSent",
       ...baseFields(request),
@@ -198,7 +254,9 @@ export const startEmail = mutation({
       email: args.email,
       emailCodeHash: args.emailCodeHash,
       emailCodeExpiresAt: args.emailCodeExpiresAt,
-      emailAttempts: 0,
+      emailAttempts: sent.attempts,
+      emailSends: sent.sends + 1,
+      emailLastSentAt: args.now,
     });
     return { ok: true, ...back };
   },

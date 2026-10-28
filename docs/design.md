@@ -6,8 +6,15 @@ The broker is a federated OpenID Provider in the shape of Dex: upstream connecto
 
 Apps, their registration tokens (hashed), clients (one per deployment: exact redirect URI, hashed
 secret), authorization requests for ten minutes, authorization codes for sixty seconds and one use,
-and an audit row per issued `id_token` (app, client, connector, pairwise subject, time). Nothing
-about a user outlives the request that carried it.
+an audit row per issued `id_token` (app, client, connector, pairwise subject, time), and a row per
+email code sent (SHA-256 of the canonical address, time) for one hour. Apart from those send rows,
+nothing about a user outlives the request that carried it.
+
+## Email send limits
+
+A request sends at most 3 codes, at least 60 seconds apart, and an address receives at most 5 codes
+per rolling hour across all requests. Wrong codes count across resends. A refused send answers 429
+on the page the user is on, with one neutral line.
 
 ## Subjects
 

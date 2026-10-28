@@ -1,5 +1,6 @@
 import { v } from "convex/values";
 import { mutation } from "./_generated/server";
+import { EMAIL_SEND_WINDOW_MS } from "./authRequests";
 
 const { number, object } = v;
 
@@ -8,8 +9,9 @@ const BATCH = 200;
 
 /**
  * Deletes what has run out: expired requests and codes, preview clients nobody used for
- * `previewClientMaxAgeMs`, and audit rows older than `signInRetentionMs`. The host calls this from a
- * cron; production and development clients are never touched.
+ * `previewClientMaxAgeMs`, audit rows older than `signInRetentionMs`, and email send rows outside
+ * the send window. The host calls this from a cron; production and development clients are never
+ * touched.
  */
 export const cleanup = mutation({
   args: { now: number(), previewClientMaxAgeMs: number(), signInRetentionMs: number() },
@@ -18,6 +20,7 @@ export const cleanup = mutation({
     authorizationCodes: number(),
     previewClients: number(),
     signIns: number(),
+    emailSends: number(),
   }),
   handler: async (ctx, args) => {
     const requests = await ctx.db
@@ -57,11 +60,20 @@ export const cleanup = mutation({
       await ctx.db.delete("signIns", signIn._id);
     }
 
+    const emailSends = await ctx.db
+      .query("emailSends")
+      .withIndex("by_at", (q) => q.lt("at", args.now - EMAIL_SEND_WINDOW_MS))
+      .take(BATCH);
+    for (const emailSend of emailSends) {
+      await ctx.db.delete("emailSends", emailSend._id);
+    }
+
     return {
       authRequests: requests.length,
       authorizationCodes: codes.length,
       previewClients: previewClients.length,
       signIns: signIns.length,
+      emailSends: emailSends.length,
     };
   },
 });
