@@ -3,9 +3,9 @@
 # for the same commit. The tag <name>@<version> records a published version.
 name: Release
 
+# Push-triggered releases start once the npm trusted publisher for @samebase/identity-broker names
+# this workflow; until then a run is manual.
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
 
 concurrency:
