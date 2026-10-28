@@ -1,6 +1,6 @@
 {
   "name": "@samebase/identity-broker",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "An OpenID Provider for Convex that holds a team's upstream sign-in connections once and keeps no user accounts.",
   "license": "Apache-2.0",
   "repository": {
