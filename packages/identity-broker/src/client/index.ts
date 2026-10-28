@@ -63,7 +63,11 @@ export { assertKeySetUsable } from "./jwt.js";
 export type IdentityBrokerConfig = {
   /** `components.identityBroker` of the host app. */
   component: ComponentApi;
-  /** The issuer URL, host-only or with a path, e.g. `https://auth.example.com`. */
+  /**
+   * The issuer URL. Supported: a dedicated hostname with the issuer at `/`, e.g.
+   * `https://auth.example.com`, where the transaction cookies carry the `__Host-` prefix. An issuer
+   * under a path uses plain cookies and is not verified in browsers.
+   */
   issuer: string;
   /** The content of `IDENTITY_BROKER_KEYS`, read in the request. */
   keys: () => string | undefined;

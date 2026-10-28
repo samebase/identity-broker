@@ -39,6 +39,14 @@ than 401.
 scheduling the next at once, and the app row after the last batch. An app with up to 200 clients
 loses them all in the first transaction.
 
+## Issuer
+
+The supported configuration is a dedicated hostname with the issuer at `/`, such as
+`https://auth.example.com`. There the transaction cookies carry the `__Host-` prefix, so no other
+path or subdomain can set or shadow them. An issuer under a path, such as
+`https://example.com/identity`, uses plain cookies scoped to that path, and is not verified in
+browsers.
+
 ## Email send limits
 
 A request sends at most 3 codes, at least 60 seconds apart; an address receives at most 5 codes per
