@@ -21,6 +21,7 @@ export const modules = import.meta.glob(["../component/**/*.ts", "!../component/
 export const component: ComponentApi = anyApi;
 
 export const ISSUER = "https://auth.test";
+export const REDIRECT_URI = "https://app.test/oauth/hub/callback";
 
 export type Harness = Awaited<ReturnType<typeof createHarness>>;
 
@@ -80,33 +81,21 @@ export async function createHarness(options: {
     });
   }
 
-  /** An app, a registration token for it, and one registered client with `redirectUri`. */
-  async function registerClient(args: {
-    appName: string;
-    firstParty: boolean;
-    redirectUri: string;
-  }) {
-    const now = Date.now();
-    const appId = `${args.appName.toLowerCase()}-test`;
-    await t.mutation(api.apps.create, {
-      appId,
-      name: args.appName,
-      firstParty: args.firstParty,
-      allowedCallbackHosts: ["*.convex.site", "127.0.0.1", "app.test"],
-      createdAt: now,
-    });
+  /** An app, a registration token for it, and one registered client with `REDIRECT_URI`. */
+  async function registerClient(appId: string) {
+    await t.mutation(api.apps.create, { appId, allowedCallbackHosts: ["app.test"] });
     const token = `rt_test-${appId}`;
     await t.mutation(api.registration.mintToken, {
       tokenHash: await sha256Hex(token),
       appId,
-      createdAt: now,
+      createdAt: Date.now(),
     });
     const response = await fetchBroker(`${issuer}/register`, {
       method: "POST",
       headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
       body: JSON.stringify({
-        redirect_uris: [args.redirectUri],
-        client_name: `${args.appName} dev`,
+        redirect_uris: [REDIRECT_URI],
+        client_name: `${appId} dev`,
         software_version: "dev-1",
         deployment_type: "development",
         // As @samebase/alchemy-identity-hub registers: Convex Auth posts the client credentials.

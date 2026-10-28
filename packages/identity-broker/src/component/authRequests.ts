@@ -4,7 +4,7 @@ import type { Doc } from "./_generated/dataModel";
 import { sha256Base64Url } from "./crypto";
 import { vAuthRequest, vUpstreamIdentity } from "./schema";
 
-const { array, boolean, literal, number, object, optional, string, union } = v;
+const { boolean, literal, number, object, optional, string, union } = v;
 
 /** Where the user goes back to once a request fails or finishes: the client's exact redirect URI. */
 const vReturn = object({ redirectUri: string(), state: optional(string()) });
@@ -39,7 +39,6 @@ export const create = mutation({
     nonce: optional(string()),
     codeChallenge: string(),
     freshLogin: boolean(),
-    txnCookieHash: optional(string()),
     createdAt: number(),
     expiresAt: number(),
   },
@@ -56,7 +55,6 @@ export const create = mutation({
       ...optionalField("nonce", args.nonce),
       codeChallenge: args.codeChallenge,
       freshLogin: args.freshLogin,
-      ...optionalField("txnCookieHash", args.txnCookieHash),
       createdAt: args.createdAt,
       expiresAt: args.expiresAt,
     });
@@ -80,7 +78,7 @@ export const get = query({
   },
 });
 
-/** The user chose an OAuth or OIDC connector; the request now waits for that connector's callback. */
+/** The request now waits for its connector's callback. */
 export const startUpstream = mutation({
   args: {
     requestId: string(),
@@ -100,8 +98,7 @@ export const startUpstream = mutation({
     if (request.expiresAt <= args.now) {
       return { ok: false, error: "expired", ...back };
     }
-    // A chooser page can be reloaded, so a pending request may start upstream more than once; the
-    // newest state hash wins. Any other status means the flow already moved on.
+    // Any status but pending or upstream means the flow already moved on.
     if (request.status !== "pending" && request.status !== "upstream") {
       return { ok: false, error: "wrong_status", ...back };
     }
@@ -130,7 +127,6 @@ const vClaimResult = union(
     ...vReturn.fields,
   }),
   object({ status: literal("expired"), requestId: string(), ...vReturn.fields }),
-  object({ status: literal("unbound") }),
   object({ status: literal("missing") }),
 );
 type ClaimResult = Infer<typeof vClaimResult>;
@@ -138,16 +134,12 @@ type ClaimResult = Infer<typeof vClaimResult>;
 /**
  * The callback of `connector` arrived with its state. Claiming moves the request to `claimed` in
  * the same mutation that finds it, so a replayed or raced callback finds nothing to claim. A
- * request started for another connector is not claimed: its state cannot finish elsewhere. A
- * request that went through the chooser is claimed only from the browser that holds its
- * transaction cookie; any other browser gets `unbound` and the request keeps waiting.
+ * request started for another connector is not claimed: its state cannot finish elsewhere.
  */
 export const claimUpstream = mutation({
   args: {
     upstreamStateHash: string(),
     connector: string(),
-    /** SHA-256 hex of each transaction cookie the callback request carried. */
-    txnCookieHashes: array(string()),
     now: number(),
   },
   returns: vClaimResult,
@@ -158,12 +150,6 @@ export const claimUpstream = mutation({
       .unique();
     if (request === null || request.status !== "upstream" || request.connector !== args.connector) {
       return { status: "missing" };
-    }
-    if (
-      request.txnCookieHash !== undefined &&
-      !args.txnCookieHashes.includes(request.txnCookieHash)
-    ) {
-      return { status: "unbound" };
     }
     const back = returnTo(request);
     if (request.expiresAt <= args.now) {
@@ -228,7 +214,7 @@ export const complete = mutation({
   },
 });
 
-/** Deletes a request the user abandoned at the hub, such as a declined consent. */
+/** Deletes a request whose upstream exchange failed. */
 export const abandon = mutation({
   args: { requestId: string() },
   returns: union(vReturn, v.null()),
@@ -347,7 +333,6 @@ function baseFields(request: Doc<"authRequests">) {
     ...optionalField("nonce", request.nonce),
     codeChallenge: request.codeChallenge,
     freshLogin: request.freshLogin,
-    ...optionalField("txnCookieHash", request.txnCookieHash),
     createdAt: request.createdAt,
     expiresAt: request.expiresAt,
   };

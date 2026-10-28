@@ -37,11 +37,6 @@ export function authorizationResponse(args: {
   redirectUri: string;
   issuer: string;
   state: string | undefined;
-  /**
-   * The Set-Cookie value that deletes the request's transaction cookie, when the browser holds
-   * one: sending the browser back to the client ends the request there.
-   */
-  clearCookie: string | undefined;
   params: Record<string, string>;
 }): Response {
   const url = new URL(args.redirectUri);
@@ -52,18 +47,13 @@ export function authorizationResponse(args: {
     url.searchParams.set("state", args.state);
   }
   url.searchParams.set("iss", args.issuer);
-  const response = redirect(url.toString());
-  if (args.clearCookie !== undefined) {
-    response.headers.append("Set-Cookie", args.clearCookie);
-  }
-  return response;
+  return redirect(url.toString());
 }
 
 export function authorizationError(args: {
   redirectUri: string;
   issuer: string;
   state: string | undefined;
-  clearCookie: string | undefined;
   error: string;
   description: string;
 }): Response {
@@ -71,7 +61,6 @@ export function authorizationError(args: {
     redirectUri: args.redirectUri,
     issuer: args.issuer,
     state: args.state,
-    clearCookie: args.clearCookie,
     params: { error: args.error, error_description: args.description },
   });
 }

@@ -1,7 +1,7 @@
 import { v } from "convex/values";
 import { mutation, query } from "./_generated/server";
 
-const { array, boolean, number, object, string } = v;
+const { array, number, object, string } = v;
 
 /**
  * Stores the hash of an initial access token (RFC 7591 section 3) that registers clients of one
@@ -30,15 +30,7 @@ export const mintToken = mutation({
 /** The app a registration token belongs to, or null for an unknown token. */
 export const readToken = query({
   args: { tokenHash: string() },
-  returns: v.union(
-    object({
-      appId: string(),
-      name: string(),
-      firstParty: boolean(),
-      allowedCallbackHosts: array(string()),
-    }),
-    v.null(),
-  ),
+  returns: v.union(object({ appId: string(), allowedCallbackHosts: array(string()) }), v.null()),
   handler: async (ctx, args) => {
     const token = await ctx.db
       .query("registrationTokens")
@@ -54,12 +46,7 @@ export const readToken = query({
     if (app === null) {
       return null;
     }
-    return {
-      appId: app.appId,
-      name: app.name,
-      firstParty: app.firstParty,
-      allowedCallbackHosts: app.allowedCallbackHosts,
-    };
+    return { appId: app.appId, allowedCallbackHosts: app.allowedCallbackHosts };
   },
 });
 

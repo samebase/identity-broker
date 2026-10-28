@@ -42,18 +42,12 @@ const authRequestFields = {
   codeChallenge: string(),
   /** `prompt=login` or `max_age` was sent: the connector must reauthenticate or refuse. */
   freshLogin: boolean(),
-  /**
-   * SHA-256 hex of the request's transaction cookie, set with the chooser page. `/continue` and
-   * the connector callback need the cookie, so only the browser that saw the chooser can move the
-   * request on. Absent when /authorize skipped the chooser.
-   */
-  txnCookieHash: optional(string()),
   createdAt: number(),
   expiresAt: number(),
 };
 
 export const vAuthRequest = union(
-  // Stored by /authorize; the user has not chosen a connector yet.
+  // Stored by /authorize before the redirect to the connector.
   object({ status: literal("pending"), ...authRequestFields }),
   // Redirected to an OAuth or OIDC connector; its callback claims the request by the state hash.
   object({
@@ -77,12 +71,10 @@ export const vAuthRequest = union(
 
 export default defineSchema({
   apps: defineTable({
+    /** The app's identity namespace: every `sub` of the app is derived from it. */
     appId: string(),
-    name: string(),
-    firstParty: boolean(),
     /** Exact hosts or `*.suffix` patterns a client callback may use, e.g. `*.convex.site`. */
     allowedCallbackHosts: array(string()),
-    createdAt: number(),
   }).index("by_app_id", ["appId"]),
 
   registrationTokens: defineTable({

@@ -1,25 +1,14 @@
 import { v } from "convex/values";
 import { mutation, query } from "./_generated/server";
 
-const { array, boolean, number, object, string } = v;
+const { array, object, string } = v;
 
-const vApp = object({
-  appId: string(),
-  name: string(),
-  firstParty: boolean(),
-  allowedCallbackHosts: array(string()),
-  createdAt: number(),
-});
-
-/** Registers an app. Its clients come later, one per deployment, through registration tokens. */
+/**
+ * Registers an app. Its clients come later, one per deployment, through registration tokens. The
+ * app id is chosen by the operator and kept for good: every `sub` of the app is derived from it.
+ */
 export const create = mutation({
-  args: {
-    appId: string(),
-    name: string(),
-    firstParty: boolean(),
-    allowedCallbackHosts: array(string()),
-    createdAt: number(),
-  },
+  args: { appId: string(), allowedCallbackHosts: array(string()) },
   returns: v.null(),
   handler: async (ctx, args) => {
     const existing = await ctx.db
@@ -31,50 +20,22 @@ export const create = mutation({
     }
     await ctx.db.insert("apps", {
       appId: args.appId,
-      name: args.name,
-      firstParty: args.firstParty,
       allowedCallbackHosts: args.allowedCallbackHosts,
-      createdAt: args.createdAt,
     });
     return null;
   },
 });
 
-export const get = query({
-  args: { appId: string() },
-  returns: v.union(vApp, v.null()),
-  handler: async (ctx, args) => {
-    const app = await ctx.db
-      .query("apps")
-      .withIndex("by_app_id", (q) => q.eq("appId", args.appId))
-      .unique();
-    if (app === null) {
-      return null;
-    }
-    return {
-      appId: app.appId,
-      name: app.name,
-      firstParty: app.firstParty,
-      allowedCallbackHosts: app.allowedCallbackHosts,
-      createdAt: app.createdAt,
-    };
-  },
-});
-
+/** Every app, by app id. */
 export const list = query({
   args: {},
-  returns: array(vApp),
+  returns: array(object({ appId: string(), allowedCallbackHosts: array(string()) })),
   handler: async (ctx) => {
-    const apps = await ctx.db.query("apps").collect();
-    return apps
-      .map((app) => ({
-        appId: app.appId,
-        name: app.name,
-        firstParty: app.firstParty,
-        allowedCallbackHosts: app.allowedCallbackHosts,
-        createdAt: app.createdAt,
-      }))
-      .sort((a, b) => a.createdAt - b.createdAt || a.appId.localeCompare(b.appId));
+    const apps = await ctx.db.query("apps").withIndex("by_app_id").collect();
+    return apps.map((app) => ({
+      appId: app.appId,
+      allowedCallbackHosts: app.allowedCallbackHosts,
+    }));
   },
 });
 

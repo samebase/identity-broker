@@ -4,10 +4,14 @@
 import { createLocalJWKSet, jwtVerify } from "jose";
 import * as client from "openid-client";
 import { afterEach, expect, test, vi } from "vite-plus/test";
-import { createHarness, fakeUpstream, ISSUER, type Harness } from "./harness.test.helper.js";
+import {
+  createHarness,
+  fakeUpstream,
+  ISSUER,
+  REDIRECT_URI,
+  type Harness,
+} from "./harness.test.helper.js";
 import { createKeySet, rotateKeySet, rotateKeySetWithoutOverlap, type KeySet } from "./keys.js";
-
-const REDIRECT_URI = "https://app.test/oauth/hub/callback";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -21,11 +25,7 @@ afterEach(() => {
 async function signIn(options: { keySet?: KeySet } = {}) {
   const upstream = fakeUpstream();
   const h = await createHarness({ connectors: [upstream.connector], ...options });
-  const { clientId, clientSecret } = await h.registerClient({
-    appName: "Bristol",
-    firstParty: true,
-    redirectUri: REDIRECT_URI,
-  });
+  const { clientId, clientSecret } = await h.registerClient("bristol");
 
   // Every request openid-client makes goes to the broker's handlers.
   const brokerFetch: client.CustomFetch = async (url, options) => {
@@ -59,6 +59,7 @@ async function signIn(options: { keySet?: KeySet } = {}) {
     code_challenge_method: "S256",
     state,
     nonce,
+    connector: "fake",
   });
 
   // The browser: the broker sends the user upstream, the fake provider sends them back.

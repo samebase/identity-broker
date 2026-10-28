@@ -192,7 +192,8 @@ export type AuthorizeInput = {
   codeChallenge: string;
   prompt: string[];
   maxAge: number | undefined;
-  connector: string | undefined;
+  /** The connector the consumer named; the handler checks that it is configured. */
+  connector: string;
 };
 
 /**
@@ -263,7 +264,7 @@ export function validateAuthorizeRest(
       return invalid(400, "invalid_request", "max_age must be a non-negative integer.");
     }
   }
-  const connector = params.get("connector")?.trim() || undefined;
+  const connector = params.get("connector") ?? "";
   return {
     ok: true,
     value: {

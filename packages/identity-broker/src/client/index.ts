@@ -12,7 +12,7 @@ import * as oauth from "oauth4webapi";
 import type { ComponentApi } from "../component/_generated/component.js";
 import type { Connector, OauthConnector, OidcConnector } from "./connectors/types.js";
 import { finishUpstream, startUpstream, type UpstreamFinish } from "./connectors/upstream.js";
-import { chooserPage, errorPage } from "./html.js";
+import { errorPage } from "./html.js";
 import {
   signAccessToken,
   signIdToken,
@@ -54,11 +54,7 @@ export { assertKeySetUsable } from "./jwt.js";
 export type IdentityBrokerConfig = {
   /** `components.identityBroker` of the host app. */
   component: ComponentApi;
-  /**
-   * The issuer URL. Supported: a dedicated hostname with the issuer at `/`, e.g.
-   * `https://auth.example.com`, where the transaction cookies carry the `__Host-` prefix. An issuer
-   * under a path uses plain cookies and is not verified in browsers.
-   */
+  /** The issuer URL, such as `https://auth.example.com`. */
   issuer: string;
   /** The content of `IDENTITY_BROKER_KEYS`, read in the request. */
   keys: () => string | undefined;
@@ -91,13 +87,6 @@ export function defineIdentityBroker(config: IdentityBrokerConfig) {
   const issuer = issuerUrl.href.replace(/\/$/, "");
   const prefix = issuerUrl.pathname.replace(/\/$/, "");
   const path = (suffix: string) => `${prefix}${suffix}`;
-  /**
-   * The chooser binds its request to the browser that saw it with one cookie per request, named
-   * after the request id, so two sign-ins in one browser keep their own. `__Host-` needs Path=/, so
-   * a path issuer uses a plain name scoped to its path.
-   */
-  const txnCookiePrefix = prefix === "" ? "__Host-broker_txn_" : "broker_txn_";
-  const txnCookieAttributes = `Path=${prefix === "" ? "/" : prefix}; HttpOnly; Secure; SameSite=Lax`;
   const component = config.component;
   const connectors = new Map(config.connectors.map((connector) => [connector.name, connector]));
   if (connectors.size !== config.connectors.length) {
@@ -111,48 +100,6 @@ export function defineIdentityBroker(config: IdentityBrokerConfig) {
   if (previewClientIdleDays !== undefined && !(previewClientIdleDays > 0)) {
     throw new Error("previewClientIdleDays must be a positive number of days");
   }
-
-  /** The transaction cookies the browser sent, by request id. */
-  function readTxnCookies(request: Request): Map<string, string> {
-    const cookies = new Map<string, string>();
-    for (const pair of request.headers.get("cookie")?.split(";") ?? []) {
-      const separator = pair.indexOf("=");
-      const name = pair.slice(0, separator).trim();
-      if (separator > 0 && name.startsWith(txnCookiePrefix)) {
-        cookies.set(name.slice(txnCookiePrefix.length), pair.slice(separator + 1).trim());
-      }
-    }
-    return cookies;
-  }
-
-  /**
-   * Whether the browser holds the cookie whose hash a chooser request stores. A first-party request
-   * that skipped the chooser stores none and needs none.
-   */
-  async function browserBound(
-    request: Request,
-    stored: { requestId: string; txnCookieHash?: string },
-  ): Promise<boolean> {
-    if (stored.txnCookieHash === undefined) {
-      return true;
-    }
-    const cookie = readTxnCookies(request).get(stored.requestId);
-    return cookie !== undefined && (await sha256Hex(cookie)) === stored.txnCookieHash;
-  }
-
-  /** The Set-Cookie value that deletes a request's cookie, when the browser sent one. */
-  function clearTxnCookie(request: Request, requestId: string): string | undefined {
-    return readTxnCookies(request).has(requestId)
-      ? `${txnCookiePrefix}${requestId}=; ${txnCookieAttributes}; Max-Age=0`
-      : undefined;
-  }
-
-  const unboundPage = () =>
-    errorPage(
-      "Sign-in not continued",
-      "This sign-in did not start in this browser. Return to the app and try again.",
-      400,
-    );
 
   const keySet = (): KeySet => parseKeySet(config.keys());
   const callbackUrl = (connector: OauthConnector | OidcConnector) =>
@@ -201,71 +148,6 @@ export function defineIdentityBroker(config: IdentityBrokerConfig) {
     json(publicJwks(keySet()), 200, { "Cache-Control": "public, max-age=300" }),
   );
 
-  /** Sends the user to a connector for a stored request. */
-  async function startConnector(
-    ctx: Ctx,
-    args: {
-      connector: Connector;
-      request: {
-        requestId: string;
-        appId: string;
-        redirectUri: string;
-        state: string | undefined;
-        freshLogin: boolean;
-      };
-      clearCookie: string | undefined;
-    },
-  ): Promise<Response> {
-    const { connector, request } = args;
-    const back = {
-      redirectUri: request.redirectUri,
-      issuer,
-      state: request.state,
-      clearCookie: args.clearCookie,
-    };
-    // Freshness is honored only as prompt=login upstream; a connector without it is refused, never
-    // pretended.
-    if (request.freshLogin && (connector.kind === "oauth" || !connector.promptLogin)) {
-      return authorizationError({
-        ...back,
-        error: "login_required",
-        description: `${connector.label} cannot reauthenticate the user, which prompt=login or max_age asked for.`,
-      });
-    }
-    const start = await startUpstream({
-      connector,
-      callbackUrl: callbackUrl(connector),
-      freshLogin: request.freshLogin,
-    });
-    const now = Date.now();
-    const result = await ctx.runMutation(component.authRequests.startUpstream, {
-      requestId: request.requestId,
-      connector: connector.name,
-      upstreamStateHash: await sha256Hex(start.state),
-      upstreamCodeVerifier: start.codeVerifier,
-      ...(start.nonce === undefined ? {} : { upstreamNonce: start.nonce }),
-      now,
-    });
-    if (!result.ok) {
-      return result.error === "not_found"
-        ? errorPage(
-            "Sign-in not found",
-            "This sign-in is unknown. Return to the app and try again.",
-            404,
-          )
-        : authorizationError({
-            ...back,
-            error: "access_denied",
-            description: `The sign-in ${result.error === "expired" ? "expired" : "already moved on"}.`,
-          });
-    }
-    return redirect(start.url);
-  }
-
-  async function readApp(ctx: Ctx, appId: string) {
-    return await ctx.runQuery(component.apps.get, { appId });
-  }
-
   const authorize = httpActionGeneric(async (ctx, request) => {
     const params = await readParameters(request);
     if (params === null) {
@@ -299,19 +181,10 @@ export function defineIdentityBroker(config: IdentityBrokerConfig) {
       redirectUri: client.redirectUri,
       issuer,
       state: params.get("state") ?? undefined,
-      clearCookie: undefined,
     };
     const rest = validateAuthorizeRest(params, target.value);
     if (!rest.ok) {
       return authorizationError({ ...back, error: rest.error, description: rest.description });
-    }
-    const app = await readApp(ctx, client.appId);
-    if (app === null) {
-      return authorizationError({
-        ...back,
-        error: "server_error",
-        description: "The client's app is gone.",
-      });
     }
     if (rest.value.prompt.includes("none")) {
       // The broker keeps no session, so it can never answer without interaction.
@@ -321,22 +194,31 @@ export function defineIdentityBroker(config: IdentityBrokerConfig) {
         description: "This provider has no session to reuse.",
       });
     }
+    // The consumer names the connector; the broker shows no page to choose one.
+    const connector = connectors.get(rest.value.connector);
+    if (connector === undefined) {
+      return authorizationError({
+        ...back,
+        error: "invalid_request",
+        description: "connector must name a connector of this provider.",
+      });
+    }
     const freshLogin = rest.value.prompt.includes("login") || rest.value.maxAge !== undefined;
+    // Freshness is honored only as prompt=login upstream; a connector without it is refused, never
+    // pretended.
+    if (freshLogin && (connector.kind === "oauth" || !connector.promptLogin)) {
+      return authorizationError({
+        ...back,
+        error: "login_required",
+        description: `${connector.label} cannot reauthenticate the user, which prompt=login or max_age asked for.`,
+      });
+    }
     const scopes = SCOPES.filter((scope) => rest.value.scopes.includes(scope));
-    // A first-party app may skip the chooser: the one it named, or the only one. A third-party app
-    // always gets the page, which doubles as consent (RFC 9700 4.11).
-    const named =
-      rest.value.connector === undefined ? undefined : connectors.get(rest.value.connector);
-    const only = connectors.size === 1 ? [...connectors.values()][0] : undefined;
-    const chosen = app.firstParty ? (named ?? only) : undefined;
-    // The request moves on only with this cookie, so a client that fetches the chooser itself cannot
-    // send a user's browser on from it.
-    const txnCookie = randomToken(32);
     const now = Date.now();
     const requestId = randomToken(24);
     await ctx.runMutation(component.authRequests.create, {
       requestId,
-      appId: app.appId,
+      appId: client.appId,
       clientId: client.clientId,
       redirectUri: client.redirectUri,
       scope: scopes.join(" "),
@@ -344,101 +226,36 @@ export function defineIdentityBroker(config: IdentityBrokerConfig) {
       ...(rest.value.nonce === undefined ? {} : { nonce: rest.value.nonce }),
       codeChallenge: rest.value.codeChallenge,
       freshLogin,
-      ...(chosen === undefined ? { txnCookieHash: await sha256Hex(txnCookie) } : {}),
       createdAt: now,
       expiresAt: now + AUTH_REQUEST_TTL_MS,
     });
-    if (chosen !== undefined) {
-      return await startConnector(ctx, {
-        connector: chosen,
-        request: {
-          requestId,
-          appId: app.appId,
-          redirectUri: client.redirectUri,
-          state: rest.value.state,
-          freshLogin,
-        },
-        clearCookie: undefined,
-      });
-    }
-    const page = chooserPage({
-      appName: app.name,
-      firstParty: app.firstParty,
-      scopes,
-      connectors: [...connectors.values()].map((connector) => ({
-        name: connector.name,
-        label: connector.label,
-        href: `${path("/continue")}?request=${encodeURIComponent(requestId)}&connector=${encodeURIComponent(connector.name)}`,
-      })),
-      denyHref: `${path("/continue")}?request=${encodeURIComponent(requestId)}&deny=1`,
-    });
-    page.headers.append(
-      "Set-Cookie",
-      `${txnCookiePrefix}${requestId}=${txnCookie}; ${txnCookieAttributes}; Max-Age=${AUTH_REQUEST_TTL_MS / 1000}`,
-    );
-    return page;
-  });
-
-  /** A chooser click: start the chosen connector, or abandon the request on deny. */
-  const continueSignIn = httpActionGeneric(async (ctx, request) => {
-    const url = new URL(request.url);
-    const requestId = url.searchParams.get("request") ?? "";
-    const stored = await ctx.runQuery(component.authRequests.get, { requestId });
-    if (stored === null) {
-      return errorPage(
-        "Sign-in not found",
-        "This sign-in is unknown or finished. Return to the app and try again.",
-        404,
-      );
-    }
-    // Only a request that showed the chooser has links to continue.
-    if (stored.txnCookieHash === undefined || !(await browserBound(request, stored))) {
-      return unboundPage();
-    }
-    const back = {
-      redirectUri: stored.redirectUri,
-      issuer,
-      state: stored.state,
-      clearCookie: clearTxnCookie(request, requestId),
-    };
-    if (url.searchParams.get("deny") !== null) {
-      await ctx.runMutation(component.authRequests.abandon, { requestId });
-      return authorizationError({
-        ...back,
-        error: "access_denied",
-        description: "The user cancelled the sign-in.",
-      });
-    }
-    if (stored.status === "completed" || stored.status === "claimed") {
-      return errorPage(
-        "Sign-in finished",
-        "This sign-in already finished. Return to the app.",
-        409,
-      );
-    }
-    const connector = connectors.get(url.searchParams.get("connector") ?? "");
-    if (connector === undefined) {
-      return errorPage("Unknown connector", "That sign-in method is not configured.", 404);
-    }
-    const app = await readApp(ctx, stored.appId);
-    if (app === null) {
-      return authorizationError({
-        ...back,
-        error: "server_error",
-        description: "The client's app is gone.",
-      });
-    }
-    return await startConnector(ctx, {
+    const start = await startUpstream({
       connector,
-      request: {
-        requestId,
-        appId: stored.appId,
-        redirectUri: stored.redirectUri,
-        state: stored.state,
-        freshLogin: stored.freshLogin,
-      },
-      clearCookie: back.clearCookie,
+      callbackUrl: callbackUrl(connector),
+      freshLogin,
     });
+    const result = await ctx.runMutation(component.authRequests.startUpstream, {
+      requestId,
+      connector: connector.name,
+      upstreamStateHash: await sha256Hex(start.state),
+      upstreamCodeVerifier: start.codeVerifier,
+      ...(start.nonce === undefined ? {} : { upstreamNonce: start.nonce }),
+      now,
+    });
+    if (!result.ok) {
+      return result.error === "not_found"
+        ? errorPage(
+            "Sign-in not found",
+            "This sign-in is unknown. Return to the app and try again.",
+            404,
+          )
+        : authorizationError({
+            ...back,
+            error: "access_denied",
+            description: `The sign-in ${result.error === "expired" ? "expired" : "already moved on"}.`,
+          });
+    }
+    return redirect(start.url);
   });
 
   function upstreamCallback(connector: OauthConnector | OidcConnector): PublicHttpAction {
@@ -452,9 +269,6 @@ export function defineIdentityBroker(config: IdentityBrokerConfig) {
       const claim = await ctx.runMutation(component.authRequests.claimUpstream, {
         upstreamStateHash: await sha256Hex(state),
         connector: connector.name,
-        txnCookieHashes: await Promise.all(
-          [...readTxnCookies(request).values()].map((cookie) => sha256Hex(cookie)),
-        ),
         now,
       });
       if (claim.status === "missing") {
@@ -464,15 +278,7 @@ export function defineIdentityBroker(config: IdentityBrokerConfig) {
           400,
         );
       }
-      if (claim.status === "unbound") {
-        return unboundPage();
-      }
-      const back = {
-        redirectUri: claim.redirectUri,
-        issuer,
-        state: claim.state,
-        clearCookie: clearTxnCookie(request, claim.requestId),
-      };
+      const back = { redirectUri: claim.redirectUri, issuer, state: claim.state };
       if (claim.status === "expired") {
         return authorizationError({
           ...back,
@@ -802,7 +608,6 @@ export function defineIdentityBroker(config: IdentityBrokerConfig) {
       http.route({ path: path("/.well-known/jwks.json"), method: "GET", handler: jwks });
       http.route({ path: path("/authorize"), method: "GET", handler: authorize });
       http.route({ path: path("/authorize"), method: "POST", handler: authorize });
-      http.route({ path: path("/continue"), method: "GET", handler: continueSignIn });
       http.route({ path: path("/register"), method: "POST", handler: register });
       http.route({ pathPrefix: registerPrefix, method: "DELETE", handler: unregister });
       http.route({ path: path("/token"), method: "POST", handler: token });
@@ -822,29 +627,17 @@ export function defineIdentityBroker(config: IdentityBrokerConfig) {
      * host module such as `convex/identityBroker.ts`.
      */
     admin() {
-      const { array, boolean, string } = v;
+      const { array, string } = v;
       return {
         createApp: internalMutationGeneric({
-          args: { name: string(), firstParty: boolean(), allowedCallbackHosts: array(string()) },
-          returns: v.object({ appId: string() }),
+          args: { appId: string(), allowedCallbackHosts: array(string()) },
+          returns: v.null(),
           handler: async (ctx, args) => {
-            const slug =
-              args.name
-                .toLowerCase()
-                .replace(/[^a-z0-9]+/g, "-")
-                .replace(/^-|-$/g, "") || "app";
-            const appId = `${slug}-${randomToken(4)
-              .toLowerCase()
-              .replace(/[^a-z0-9]/g, "")
-              .slice(0, 5)}`;
             await ctx.runMutation(component.apps.create, {
-              appId,
-              name: args.name,
-              firstParty: args.firstParty,
+              appId: args.appId,
               allowedCallbackHosts: args.allowedCallbackHosts,
-              createdAt: Date.now(),
             });
-            return { appId };
+            return null;
           },
         }),
         mintRegistrationToken: internalMutationGeneric({

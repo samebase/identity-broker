@@ -27,40 +27,15 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
       create: FunctionReference<
         "mutation",
         "internal",
-        {
-          allowedCallbackHosts: Array<string>;
-          appId: string;
-          createdAt: number;
-          firstParty: boolean;
-          name: string;
-        },
+        { allowedCallbackHosts: Array<string>; appId: string },
         null,
-        Name
-      >;
-      get: FunctionReference<
-        "query",
-        "internal",
-        { appId: string },
-        {
-          allowedCallbackHosts: Array<string>;
-          appId: string;
-          createdAt: number;
-          firstParty: boolean;
-          name: string;
-        } | null,
         Name
       >;
       list: FunctionReference<
         "query",
         "internal",
         {},
-        Array<{
-          allowedCallbackHosts: Array<string>;
-          appId: string;
-          createdAt: number;
-          firstParty: boolean;
-          name: string;
-        }>,
+        Array<{ allowedCallbackHosts: Array<string>; appId: string }>,
         Name
       >;
       remove: FunctionReference<
@@ -89,12 +64,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
       claimUpstream: FunctionReference<
         "mutation",
         "internal",
-        {
-          connector: string;
-          now: number;
-          txnCookieHashes: Array<string>;
-          upstreamStateHash: string;
-        },
+        { connector: string; now: number; upstreamStateHash: string },
         | {
             connector: string;
             createdAt: number;
@@ -112,7 +82,6 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
             state?: string;
             status: "expired";
           }
-        | { status: "unbound" }
         | { status: "missing" },
         Name
       >;
@@ -159,7 +128,6 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
           requestId: string;
           scope: string;
           state?: string;
-          txnCookieHash?: string;
         },
         null,
         Name
@@ -210,7 +178,6 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
             scope: string;
             state?: string;
             status: "pending";
-            txnCookieHash?: string;
           }
         | {
             appId: string;
@@ -226,7 +193,6 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
             scope: string;
             state?: string;
             status: "upstream";
-            txnCookieHash?: string;
             upstreamCodeVerifier: string;
             upstreamNonce?: string;
             upstreamStateHash: string;
@@ -245,7 +211,6 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
             scope: string;
             state?: string;
             status: "claimed";
-            txnCookieHash?: string;
           }
         | {
             appId: string;
@@ -269,7 +234,6 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
             scope: string;
             state?: string;
             status: "completed";
-            txnCookieHash?: string;
           }
         | null,
         Name
@@ -402,12 +366,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         "query",
         "internal",
         { tokenHash: string },
-        {
-          allowedCallbackHosts: Array<string>;
-          appId: string;
-          firstParty: boolean;
-          name: string;
-        } | null,
+        { allowedCallbackHosts: Array<string>; appId: string } | null,
         Name
       >;
       revokeToken: FunctionReference<

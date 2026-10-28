@@ -24,13 +24,7 @@ async function appWith(
   t: ReturnType<typeof convexTest>,
   args: { appId: string; clients: number; tokens: number },
 ) {
-  await t.mutation(api.apps.create, {
-    appId: args.appId,
-    name: args.appId,
-    firstParty: true,
-    allowedCallbackHosts: ["app.test"],
-    createdAt: now,
-  });
+  await t.mutation(api.apps.create, { appId: args.appId, allowedCallbackHosts: ["app.test"] });
   for (let row = 0; row < args.tokens; row++) {
     await t.mutation(api.registration.mintToken, {
       tokenHash: `${args.appId}-token-${row}`,
@@ -46,7 +40,7 @@ async function appWith(
 /** The rows of `appId` that are left: the app, its tokens and its clients. */
 async function rowsOf(t: ReturnType<typeof convexTest>, appId: string) {
   return {
-    app: (await t.query(api.apps.get, { appId })) !== null,
+    app: (await t.query(api.apps.list, {})).some((app) => app.appId === appId),
     tokens: (await t.query(api.registration.listTokens, { appId })).length,
     clients: (await t.query(api.clients.listByApp, { appId })).length,
   };
