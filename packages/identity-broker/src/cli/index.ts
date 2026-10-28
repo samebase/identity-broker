@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import {
+  assertKeySetUsable,
   createKeySet,
   parseKeySet,
   rotateKeySet,
@@ -7,8 +8,9 @@ import {
 } from "../client/keys.js";
 
 const USAGE = `identity-broker keys                         print a new key set for IDENTITY_BROKER_KEYS
-identity-broker keys --rotate                read the current key set on stdin, print the rotated
-                                             one; the retired public key stays for 14 days
+identity-broker keys --rotate                read the current key set on stdin, check that every
+                                             key imports, print the rotated one; the retired
+                                             public key stays for 14 days
 identity-broker keys --rotate --no-overlap   the same after a key compromise: retired keys are
                                              dropped at once; the salt is kept`;
 
@@ -34,6 +36,8 @@ async function main(argv: string[]): Promise<number> {
   }
   if (rotate) {
     const current = parseKeySet(await readStdin());
+    // The retired keys carry over, so a set the host could not sign or verify with stops here.
+    await assertKeySetUsable(current);
     const rotated = noOverlap
       ? await rotateKeySetWithoutOverlap(current)
       : await rotateKeySet(current);

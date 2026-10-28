@@ -64,6 +64,9 @@ the key set: a lost salt cannot be recreated.
 ## Keys
 
 `IDENTITY_BROKER_KEYS` holds one current RS256 private key, the public halves of retired keys with
-their retirement time, and the salt. `keys --rotate` keeps the retired public key in the JWKS for 14
-days. After a key compromise, `keys --rotate --no-overlap` drops the retired keys at once, so every
-token signed before stops verifying; the salt is kept.
+their retirement time, and the salt. The host parses it in each request and refuses a salt shorter
+than 16 bytes or a key without its RSA members; `keys --rotate` also imports every key and checks
+that the current key's members belong to one RSA key, since Node imports a private key with a wrong
+`d`. `keys --rotate` keeps the retired public key in the JWKS for 14 days. After a key compromise,
+`keys --rotate --no-overlap` drops the retired keys at once, so every token signed before stops
+verifying; the salt is kept.
