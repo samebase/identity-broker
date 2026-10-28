@@ -2,7 +2,7 @@ import { v } from "convex/values";
 import { mutation, query } from "./_generated/server";
 import { vDeploymentType, vTokenEndpointAuthMethod } from "./schema";
 
-const { array, number, object, optional, string } = v;
+const { array, boolean, number, object, optional, string } = v;
 
 const vClient = object({
   clientId: string(),
@@ -96,5 +96,26 @@ export const remove = mutation({
       await ctx.db.delete("clients", client._id);
     }
     return null;
+  },
+});
+
+/**
+ * Deletes a client for `DELETE /register/<client_id>`, whose registration token names `appId`.
+ * False when no client has this id or it belongs to another app: the endpoint answers both with
+ * 404, so a token of one app learns nothing about the clients of another.
+ */
+export const unregister = mutation({
+  args: { clientId: string(), appId: string() },
+  returns: boolean(),
+  handler: async (ctx, args) => {
+    const client = await ctx.db
+      .query("clients")
+      .withIndex("by_client_id", (q) => q.eq("clientId", args.clientId))
+      .unique();
+    if (client === null || client.appId !== args.appId) {
+      return false;
+    }
+    await ctx.db.delete("clients", client._id);
+    return true;
   },
 });

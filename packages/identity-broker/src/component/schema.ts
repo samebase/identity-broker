@@ -10,8 +10,9 @@ export const vTokenEndpointAuthMethod = union(
 );
 
 /**
- * The deployment a client stands for. Preview clients are pruned when the host sets
- * `previewClientIdleDays`; every other client is deleted by hand.
+ * The deployment a client stands for. Any client is deleted by its app's registration token at
+ * `DELETE /register/<client_id>`, or by hand; preview clients are also pruned when the host sets
+ * `previewClientIdleDays`.
  */
 export const vDeploymentType = union(
   literal("production"),

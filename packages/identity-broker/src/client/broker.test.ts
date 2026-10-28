@@ -208,6 +208,84 @@ describe("registration", () => {
     });
     expect(expired.status).toBe(401);
   });
+
+  test("DELETE /register/<client_id> deletes a client only with its app's token", async () => {
+    const h = await createHarness({ connectors: [fakeUpstream().connector] });
+    const bristol = await h.registerClient({
+      appName: "Bristol",
+      firstParty: true,
+      redirectUri: REDIRECT_URI,
+    });
+    const other = await h.registerClient({
+      appName: "Other",
+      firstParty: true,
+      redirectUri: REDIRECT_URI,
+    });
+    const expiredToken = "rt_expired";
+    await h.t.mutation(api.registration.mintToken, {
+      tokenHash: await sha256Hex(expiredToken),
+      appId: bristol.appId,
+      expiresAt: Date.now() - 1,
+      createdAt: Date.now() - 60_000,
+    });
+    const unregister = (clientId: string, token: string | undefined) =>
+      h.fetchBroker(`${ISSUER}/register/${clientId}`, {
+        method: "DELETE",
+        headers: token === undefined ? {} : { Authorization: `Bearer ${token}` },
+      });
+    const exists = async (clientId: string) =>
+      (await h.t.query(api.clients.get, { clientId })) !== null;
+
+    for (const token of [undefined, "rt_unknown", expiredToken]) {
+      const refused = await unregister(bristol.clientId, token);
+      expect(refused.status).toBe(401);
+      expect((await refused.json()).error).toBe("invalid_token");
+    }
+    // Another app's live token gets the answer an unknown client gets, so it learns nothing.
+    const otherApp = await unregister(bristol.clientId, other.token);
+    const unknown = await unregister("cl_unknown", bristol.token);
+    expect(otherApp.status).toBe(404);
+    expect(unknown.status).toBe(404);
+    expect(await otherApp.json()).toEqual(await unknown.json());
+    expect(await exists(bristol.clientId)).toBe(true);
+
+    const deleted = await unregister(bristol.clientId, bristol.token);
+    expect(deleted.status).toBe(204);
+    expect(await deleted.text()).toBe("");
+    expect(await exists(bristol.clientId)).toBe(false);
+    expect(await exists(other.clientId)).toBe(true);
+    // A client that is already gone is 404.
+    expect((await unregister(bristol.clientId, bristol.token)).status).toBe(404);
+  });
+
+  test("DELETE /register/<client_id> deletes a client of any deployment type, under a path issuer too", async () => {
+    for (const issuer of [ISSUER, "https://samebase.test/identity"]) {
+      const h = await createHarness({ connectors: [fakeUpstream().connector], issuer });
+      const { token } = await h.registerClient({
+        appName: "Bristol",
+        firstParty: true,
+        redirectUri: REDIRECT_URI,
+      });
+      for (const deploymentType of ["production", "development", "preview"]) {
+        const registered = await h.fetchBroker(`${issuer}/register`, {
+          method: "POST",
+          headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+          body: JSON.stringify({
+            redirect_uris: [REDIRECT_URI],
+            client_name: deploymentType,
+            deployment_type: deploymentType,
+          }),
+        });
+        const clientId = String((await registered.json()).client_id);
+        const deleted = await h.fetchBroker(`${issuer}/register/${clientId}`, {
+          method: "DELETE",
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        expect(deleted.status).toBe(204);
+        expect(await h.t.query(api.clients.get, { clientId })).toBeNull();
+      }
+    }
+  });
 });
 
 describe("authorization code flow with an OAuth connector", () => {

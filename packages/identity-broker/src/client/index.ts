@@ -773,23 +773,43 @@ export function defineIdentityBroker(config: IdentityBrokerConfig) {
     return errorPage("Invalid form", "Unknown step.", 400);
   });
 
-  const register = httpActionGeneric(async (ctx, request) => {
+  /**
+   * The app whose registration token a `/register` request carries as a Bearer token, or the 401
+   * that answers a missing, unknown or expired token. Registering and deleting a client both pass
+   * through here, so they authenticate alike.
+   */
+  async function registrationApp(ctx: Ctx, request: Request, now: number) {
     const token = readBearerToken(request.headers.get("authorization"));
     if (token === null) {
-      return oauthError(
-        401,
-        "invalid_token",
-        "A registration token is required as a Bearer token.",
-      );
+      return {
+        ok: false,
+        response: oauthError(
+          401,
+          "invalid_token",
+          "A registration token is required as a Bearer token.",
+        ),
+      } as const;
     }
-    const now = Date.now();
     const app = await ctx.runQuery(component.registration.readToken, {
       tokenHash: await sha256Hex(token),
       now,
     });
     if (app === null) {
-      return oauthError(401, "invalid_token", "The registration token is unknown or expired.");
+      return {
+        ok: false,
+        response: oauthError(401, "invalid_token", "The registration token is unknown or expired."),
+      } as const;
     }
+    return { ok: true, app } as const;
+  }
+
+  const register = httpActionGeneric(async (ctx, request) => {
+    const now = Date.now();
+    const auth = await registrationApp(ctx, request, now);
+    if (!auth.ok) {
+      return auth.response;
+    }
+    const { app } = auth;
     let payload: unknown;
     try {
       payload = await request.json();
@@ -838,6 +858,33 @@ export function defineIdentityBroker(config: IdentityBrokerConfig) {
       },
       201,
     );
+  });
+
+  const registerPrefix = path("/register/");
+
+  /**
+   * `DELETE <prefix>/register/<client_id>` deletes a client of the token's app, of any deployment
+   * type. The segment is compared as sent: `/register` issues `cl_` and base64url, which a path
+   * carries as is. A client that is gone and a client of another app both answer 404, never 403,
+   * so a token learns nothing about another app's clients.
+   */
+  const unregister = httpActionGeneric(async (ctx, request) => {
+    const auth = await registrationApp(ctx, request, Date.now());
+    if (!auth.ok) {
+      return auth.response;
+    }
+    const deleted = await ctx.runMutation(component.clients.unregister, {
+      clientId: new URL(request.url).pathname.slice(registerPrefix.length),
+      appId: auth.app.appId,
+    });
+    if (!deleted) {
+      return oauthError(
+        404,
+        "invalid_client",
+        "No client with this id belongs to the app of this registration token.",
+      );
+    }
+    return new Response(null, { status: 204 });
   });
 
   const token = httpActionGeneric(async (ctx, request) => {
@@ -974,6 +1021,7 @@ export function defineIdentityBroker(config: IdentityBrokerConfig) {
       http.route({ path: path("/authorize"), method: "POST", handler: authorize });
       http.route({ path: path("/continue"), method: "GET", handler: continueSignIn });
       http.route({ path: path("/register"), method: "POST", handler: register });
+      http.route({ pathPrefix: registerPrefix, method: "DELETE", handler: unregister });
       http.route({ path: path("/token"), method: "POST", handler: token });
       http.route({ path: path("/userinfo"), method: "GET", handler: userinfo });
       http.route({ path: path("/userinfo"), method: "POST", handler: userinfo });

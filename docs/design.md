@@ -18,9 +18,20 @@ began, so the run ends: rows written during it run out after the cutoff. A compl
 until one minute after its authorization code expires, so cleanup never removes a request whose code
 can still be redeemed.
 
-Clients stay until `deleteClient` removes them. A host that sets `previewClientIdleDays` also has
-cleanup delete a preview client with no sign-in for that many days. It is off by default, because a
-deployment whose client was deleted does not register again by itself.
+Clients stay until `DELETE /register/<client_id>` or `deleteClient` removes them, or their app is
+deleted. A host that sets `previewClientIdleDays` also has cleanup delete a preview client with no
+sign-in for that many days. It is off by default, because a deployment whose client was deleted does
+not register again by itself.
+
+## Registration
+
+`POST /register` (RFC 7591) registers one deployment of an app as a client, with the app's
+registration token as a Bearer token. `DELETE /register/<client_id>` with a token of the same app
+deletes that client, of any deployment type, and answers 204. A missing, unknown or expired token
+answers 401. A client that is gone and a client of another app both answer 404, not 403, so a token
+learns nothing about another app's clients. The delete has the shape of RFC 7592's, which the broker
+does not implement: no registration access token per client, and a missing client answers 404 rather
+than 401.
 
 ## Email send limits
 

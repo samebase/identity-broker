@@ -53,6 +53,13 @@ Store the returned `client_id` and `client_secret` on that deployment as `HUB_CL
 `HUB_CLIENT_SECRET` (`npx convex env set --deployment <name> ...`). Keep the registration token in
 CI secrets next to the deploy key, never in a deployment's env.
 
+When the deployment goes away, delete its client with a token of the same app (204, or 404 for a
+client that is already gone):
+
+```sh
+curl -sS -X DELETE "$HUB/register/$HUB_CLIENT_ID" -H "Authorization: Bearer $HUB_REGISTRATION_TOKEN"
+```
+
 In an Alchemy v2 stack, the `IdentityHub.Client` resource of `@samebase/alchemy-identity-hub` makes
 this request at deploy time, and `Convex.EnvironmentVariable` stores the client on the deployment.
 

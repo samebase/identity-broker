@@ -95,6 +95,9 @@ Each deployment then posts its callback URL to `/register` with that token as a 
 gets a `client_id` and `client_secret`. A Convex Auth v2 app points its generic OAuth method at
 `<issuer>/authorize` and `<issuer>/token`; see the [docs](docs/consumers.md).
 
+When a deployment goes away, `DELETE /register/<client_id>` with a token of the same app deletes its
+client and answers 204. A client that is gone or belongs to another app answers 404.
+
 ## Standards
 
 OAuth 2.1 (code flow, PKCE S256, exact redirect URIs, `iss` on responses), OpenID Connect Core and

@@ -78,7 +78,11 @@ export async function createHarness(options: {
         body: await response.text(),
       };
     });
-    return new Response(result.body, { status: result.status, headers: result.headers });
+    // The Response constructor refuses any body for a 204, an empty one included.
+    return new Response(result.status === 204 ? null : result.body, {
+      status: result.status,
+      headers: result.headers,
+    });
   }
 
   /** An app, a registration token for it, and one registered client with `redirectUri`. */
