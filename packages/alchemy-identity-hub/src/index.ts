@@ -79,24 +79,41 @@ export class RegistrationTokenRejected extends Schema.TaggedError<RegistrationTo
   }
 }
 
-/** The hub answered 400 with an OAuth error: it refused the client metadata. */
+/**
+ * The hub's 400 error codes, each with a local sentence. The hub's own text is never repeated: a
+ * code outside this list is "unknown", and the error_description is not read.
+ */
+const REJECTIONS = {
+  invalid_redirect_uri: `the app does not allow the host of redirectUri (invalid_redirect_uri). Fix redirectUri, or allow its host for the app on the hub with \`npx convex run --prod identityBroker:setAllowedCallbackHosts '{"appId":"<app id>","allowedCallbackHosts":[...]}'\`, which replaces the list.`,
+  invalid_client_metadata:
+    "the hub refused the client metadata (invalid_client_metadata). Check clientName, softwareVersion, and deploymentType.",
+  invalid_request:
+    "the hub found the registration request malformed (invalid_request). Check that issuer is the hub's issuer URL.",
+  invalid_token: `the hub rejected the registration token (invalid_token). Mint a new one on the hub with \`npx convex run --prod identityBroker:mintRegistrationToken '{"appId":"<app id>"}'\` and pass it as registrationToken.`,
+  unknown:
+    "the hub answered with an unknown error code. Check that issuer is the hub's issuer URL and that the hub runs @samebase/identity-broker.",
+} as const;
+
+const RejectionCode = Schema.Literals([
+  "invalid_redirect_uri",
+  "invalid_client_metadata",
+  "invalid_request",
+  "invalid_token",
+  "unknown",
+]);
+
+/** The hub answered 400 with an OAuth error: it refused the registration. */
 export class RegistrationRejected extends Schema.TaggedError<RegistrationRejected>()(
   "RegistrationRejected",
   {
     issuer: Schema.String,
     redirectUri: Schema.String,
-    /** The OAuth error code, such as `invalid_redirect_uri`. */
-    code: Schema.String,
-    /** The hub's error_description as one line of printable characters, at most 200. */
-    description: Schema.String,
+    /** The hub's OAuth error code when this resource knows it, otherwise `unknown`. */
+    code: RejectionCode,
   },
 ) {
   override get message() {
-    const fix =
-      this.code === "invalid_redirect_uri"
-        ? `Fix redirectUri, or allow its host for the app on the hub with \`npx convex run --prod identityBroker:setAllowedCallbackHosts '{"appId":"<app id>","allowedCallbackHosts":[...]}'\`, which replaces the list.`
-        : "Fix the prop that the description names.";
-    return `The identity hub at ${this.issuer} refused to register ${this.redirectUri}: ${this.code}: ${this.description} ${fix}`;
+    return `The identity hub at ${this.issuer} refused to register ${this.redirectUri}: ${REJECTIONS[this.code]}`;
   }
 }
 
@@ -115,11 +132,8 @@ const RegisteredClient = Schema.Struct({
   client_id: Schema.NonEmptyString,
   client_secret: Schema.NonEmptyString,
 });
-/** RFC 7591 3.2.2. */
-const RegistrationError = Schema.Struct({
-  error: Schema.String,
-  error_description: Schema.String,
-});
+/** RFC 7591 3.2.2, the field this resource reads. */
+const RegistrationError = Schema.Struct({ error: Schema.String });
 /** The part of a fetch error's cause that is a local diagnostic, such as `ECONNREFUSED`. */
 const ErrorCode = Schema.Struct({ code: Schema.String });
 
@@ -164,7 +178,7 @@ const registeredFor = (output: ClientAttributes, issuer: string, props: ClientPr
 
 /**
  * One registration. The token goes only into the request header. An error carries local
- * diagnostics only: the status, an error name and code, and the hub's OAuth error made one line.
+ * diagnostics only: the status, an error name and code, or a known OAuth error code.
  */
 const register = (issuer: string, props: ClientProps) =>
   Effect.gen(function* () {
@@ -227,11 +241,7 @@ const register = (issuer: string, props: ClientProps) =>
       return yield* new RegistrationRejected({
         issuer,
         redirectUri: props.redirectUri,
-        code: body.error,
-        // Code points, so the cut never splits a surrogate pair.
-        description: Array.from(body.error_description.replace(/[\s\p{C}]+/gu, " ").trim())
-          .slice(0, 200)
-          .join(""),
+        code: Schema.is(RejectionCode)(body.error) ? body.error : "unknown",
       });
     }
     return yield* new RegistrationFailed({

@@ -4,7 +4,7 @@ import type { Doc } from "./_generated/dataModel";
 import { sha256Base64Url } from "./crypto";
 import { vAuthRequest, vUpstreamIdentity } from "./schema";
 
-const { boolean, literal, number, object, optional, string, union } = v;
+const { array, boolean, literal, number, object, optional, string, union } = v;
 
 /** Where the user goes back to once a request fails or finishes: the client's exact redirect URI. */
 const vReturn = object({ redirectUri: string(), state: optional(string()) });
@@ -127,7 +127,8 @@ const vClaimResult = union(
     freshLogin: boolean(),
     ...vReturn.fields,
   }),
-  object({ status: literal("expired"), ...vReturn.fields }),
+  object({ status: literal("expired"), requestId: string(), ...vReturn.fields }),
+  object({ status: literal("unbound") }),
   object({ status: literal("missing") }),
 );
 type ClaimResult = Infer<typeof vClaimResult>;
@@ -135,10 +136,18 @@ type ClaimResult = Infer<typeof vClaimResult>;
 /**
  * The callback of `connector` arrived with its state. Claiming moves the request to `claimed` in
  * the same mutation that finds it, so a replayed or raced callback finds nothing to claim. A
- * request started for another connector is not claimed: its state cannot finish elsewhere.
+ * request started for another connector is not claimed: its state cannot finish elsewhere. A
+ * request that went through the chooser is claimed only from the browser that holds its
+ * transaction cookie; any other browser gets `unbound` and the request keeps waiting.
  */
 export const claimUpstream = mutation({
-  args: { upstreamStateHash: string(), connector: string(), now: number() },
+  args: {
+    upstreamStateHash: string(),
+    connector: string(),
+    /** SHA-256 hex of each transaction cookie the callback request carried. */
+    txnCookieHashes: array(string()),
+    now: number(),
+  },
   returns: vClaimResult,
   handler: async (ctx, args): Promise<ClaimResult> => {
     const request = await ctx.db
@@ -148,10 +157,16 @@ export const claimUpstream = mutation({
     if (request === null || request.status !== "upstream" || request.connector !== args.connector) {
       return { status: "missing" };
     }
+    if (
+      request.txnCookieHash !== undefined &&
+      !args.txnCookieHashes.includes(request.txnCookieHash)
+    ) {
+      return { status: "unbound" };
+    }
     const back = returnTo(request);
     if (request.expiresAt <= args.now) {
       await ctx.db.delete("authRequests", request._id);
-      return { status: "expired", ...back };
+      return { status: "expired", requestId: request.requestId, ...back };
     }
     await ctx.db.replace("authRequests", request._id, {
       status: "claimed",

@@ -3,6 +3,7 @@ import { decodeJwt } from "jose";
 import { afterEach, describe, expect, test, vi } from "vite-plus/test";
 import { api } from "../component/_generated/api.js";
 import { email } from "./connectors/email.js";
+import { google } from "./connectors/google.js";
 import {
   createHarness,
   fakeUpstream,
@@ -15,6 +16,7 @@ import {
 const REDIRECT_URI = "https://app.test/oauth/hub/callback";
 
 afterEach(() => {
+  vi.useRealTimers();
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
 });
@@ -217,8 +219,11 @@ describe("authorization code flow with an OAuth connector", () => {
     const { verifier, challenge } = await pkce();
 
     const started = await h.fetchBroker(authorizeUrl(h, { clientId, challenge }));
+    // A first-party request that skips the chooser sets no cookie and completes without one.
+    expect(started.headers.get("set-cookie")).toBeNull();
     const back = await completeUpstream(h, started);
     expect(back.status).toBe(302);
+    expect(back.headers.get("set-cookie")).toBeNull();
     const location = new URL(back.headers.get("location") ?? "");
     expect(location.origin + location.pathname).toBe(REDIRECT_URI);
     expect(location.searchParams.get("state")).toBe("client-state");
@@ -360,6 +365,21 @@ describe("authorization code flow with an OAuth connector", () => {
     expect(badRedirect.status).toBe(400);
     expect(badRedirect.headers.get("location")).toBeNull();
 
+    // A repeated parameter of any name is a local page: an ambiguous target is never redirected to.
+    for (const [name, value] of [
+      ["redirect_uri", "https://evil.example/cb"],
+      ["client_id", "cl_other"],
+      ["state", "other-state"],
+    ] as const) {
+      const repeated = authorizeUrl(h, { clientId, challenge });
+      repeated.searchParams.append(name, value);
+      const response = await h.fetchBroker(repeated);
+      expect(response.status).toBe(400);
+      expect(response.headers.get("location")).toBeNull();
+      expect(response.headers.get("content-type")).toMatch(/text\/html/);
+      expect(await response.text()).toContain("A parameter is repeated.");
+    }
+
     const noOpenid = await h.fetchBroker(
       authorizeUrl(h, { clientId, challenge, extra: { scope: "email" } }),
     );
@@ -383,6 +403,27 @@ describe("authorization code flow with an OAuth connector", () => {
     expect(new URL(fresh.headers.get("location") ?? "").searchParams.get("error")).toBe(
       "login_required",
     );
+  });
+
+  test("Google documents no prompt=login, so a fresh login through it is refused", async () => {
+    const h = await createHarness({
+      connectors: [google({ clientId: () => "google-client", clientSecret: () => "s" })],
+    });
+    const { clientId } = await h.registerClient({
+      appName: "Bristol",
+      firstParty: true,
+      redirectUri: REDIRECT_URI,
+    });
+    for (const extra of [{ prompt: "login" }, { max_age: "0" }]) {
+      const { challenge } = await pkce();
+      const response = await h.fetchBroker(authorizeUrl(h, { clientId, challenge, extra }));
+      const location = new URL(response.headers.get("location") ?? "");
+      expect(location.origin + location.pathname).toBe(REDIRECT_URI);
+      expect(location.searchParams.get("error")).toBe("login_required");
+      expect(location.searchParams.get("error_description")).toBe(
+        "Google cannot reauthenticate the user, which prompt=login or max_age asked for.",
+      );
+    }
   });
 
   test("a replayed or unknown upstream state is refused, a denied upstream goes back as access_denied", async () => {
@@ -564,7 +605,7 @@ describe("authorization code flow with an OAuth connector", () => {
     expect(page.status).toBe(200);
     const setCookie = page.headers.get("set-cookie") ?? "";
     expect(setCookie).toMatch(
-      /^__Host-broker_txn=[\w-]{43}; HttpOnly; Secure; SameSite=Lax; Path=\/$/,
+      /^__Host-broker_txn_[\w-]{32}=[\w-]{43}; Path=\/; HttpOnly; Secure; SameSite=Lax; Max-Age=600$/,
     );
     const cookie = setCookie.split(";")[0] ?? "";
     const html = await page.text();
@@ -573,9 +614,15 @@ describe("authorization code flow with an OAuth connector", () => {
       "from the provider you choose: a stable id, your name and picture, and your verified email address.",
     );
     const deny = html.match(/href="([^"]*deny=1)"/)?.[1]?.replace(/&amp;/g, "&") ?? "";
+    const requestId = new URL(`${ISSUER}${deny}`).searchParams.get("request") ?? "";
+    expect(cookie.startsWith(`__Host-broker_txn_${requestId}=`)).toBe(true);
     const denied = await h.fetchBroker(`${ISSUER}${deny}`, { headers: { Cookie: cookie } });
     expect(new URL(denied.headers.get("location") ?? "").searchParams.get("error")).toBe(
       "access_denied",
+    );
+    // The abandoned request deletes its cookie.
+    expect(denied.headers.get("set-cookie")).toBe(
+      `__Host-broker_txn_${requestId}=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0`,
     );
     const again = await h.fetchBroker(`${ISSUER}${deny}`, { headers: { Cookie: cookie } });
     expect(again.status).toBe(404);
@@ -602,7 +649,12 @@ describe("authorization code flow with an OAuth connector", () => {
     const choose = link(/href="([^"]*connector=fake)"/);
     const deny = link(/href="([^"]*deny=1)"/);
     const requestId = new URL(choose).searchParams.get("request") ?? "";
-    for (const headers of [{}, { Cookie: "__Host-broker_txn=forged" }]) {
+    for (const headers of [
+      {},
+      { Cookie: `__Host-broker_txn_${requestId}=forged` },
+      // The right value under another request's name is not this request's cookie.
+      { Cookie: `__Host-broker_txn_other=${cookie.split("=")[1] ?? ""}` },
+    ]) {
       expect((await h.fetchBroker(choose, { headers })).status).toBe(400);
       expect((await h.fetchBroker(deny, { headers })).status).toBe(400);
     }
@@ -625,8 +677,87 @@ describe("authorization code flow with an OAuth connector", () => {
     const { challenge } = await pkce();
     const page = await h.fetchBroker(authorizeUrl(h, { clientId, challenge }));
     expect(page.headers.get("set-cookie")).toMatch(
-      /^broker_txn=[\w-]{43}; HttpOnly; Secure; SameSite=Lax; Path=\/identity$/,
+      /^broker_txn_[\w-]{32}=[\w-]{43}; Path=\/identity; HttpOnly; Secure; SameSite=Lax; Max-Age=600$/,
     );
+  });
+
+  test("two sign-ins in one browser keep their own cookies", async () => {
+    const h = await createHarness({ connectors: [fakeUpstream().connector] });
+    const { clientId } = await h.registerClient({
+      appName: "Stranger",
+      firstParty: false,
+      redirectUri: REDIRECT_URI,
+    });
+    const chooser = async () => {
+      const { challenge } = await pkce();
+      const page = await h.fetchBroker(authorizeUrl(h, { clientId, challenge }));
+      const cookie = (page.headers.get("set-cookie") ?? "").split(";")[0] ?? "";
+      const href = (await page.text()).match(/href="([^"]*connector=fake)"/)?.[1] ?? "";
+      return { cookie, choose: `${ISSUER}${href.replace(/&amp;/g, "&")}` };
+    };
+    const first = await chooser();
+    const second = await chooser();
+    expect(first.cookie.split("=")[0]).not.toBe(second.cookie.split("=")[0]);
+    const jar = { Cookie: `${first.cookie}; ${second.cookie}` };
+    for (const { choose } of [first, second]) {
+      const chosen = await h.fetchBroker(choose, { headers: jar });
+      expect(chosen.status).toBe(302);
+      expect(new URL(chosen.headers.get("location") ?? "").origin).toBe("https://upstream.test");
+    }
+  });
+
+  test("a chooser request's callback without the cookie is refused and stays claimable", async () => {
+    const h = await createHarness({ connectors: [fakeUpstream().connector] });
+    const { clientId, clientSecret } = await h.registerClient({
+      appName: "Stranger",
+      firstParty: false,
+      redirectUri: REDIRECT_URI,
+    });
+    const { verifier, challenge } = await pkce();
+    // A client can fetch the chooser and continue it itself, then send a user the upstream URL.
+    const page = await h.fetchBroker(authorizeUrl(h, { clientId, challenge }));
+    const cookie = (page.headers.get("set-cookie") ?? "").split(";")[0] ?? "";
+    const choose = (await page.text()).match(/href="([^"]*connector=fake)"/)?.[1] ?? "";
+    const chooseUrl = `${ISSUER}${choose.replace(/&amp;/g, "&")}`;
+    const requestId = new URL(chooseUrl).searchParams.get("request") ?? "";
+    const started = await h.fetchBroker(chooseUrl, { headers: { Cookie: cookie } });
+    const upstreamUrl = new URL(started.headers.get("location") ?? "");
+    const callback = new URL(upstreamUrl.searchParams.get("redirect_uri") ?? "");
+    callback.searchParams.set("code", "upstream-code");
+    callback.searchParams.set("state", upstreamUrl.searchParams.get("state") ?? "");
+
+    for (const headers of [{}, { Cookie: `__Host-broker_txn_${requestId}=forged` }]) {
+      const refused = await h.fetchBroker(callback, { headers });
+      expect(refused.status).toBe(400);
+      expect(refused.headers.get("location")).toBeNull();
+      expect((await h.t.query(api.authRequests.get, { requestId }))?.status).toBe("upstream");
+    }
+
+    // The browser that saw the chooser finishes the sign-in, and the cookie is deleted.
+    const back = await h.fetchBroker(callback, { headers: { Cookie: cookie } });
+    expect(back.status).toBe(302);
+    expect(back.headers.get("set-cookie")).toBe(
+      `__Host-broker_txn_${requestId}=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0`,
+    );
+    const code = new URL(back.headers.get("location") ?? "").searchParams.get("code") ?? "";
+    expect((await exchange(h, { code, clientId, clientSecret, verifier })).status).toBe(200);
+  });
+
+  test("every page refuses to be framed", async () => {
+    const h = await createHarness({ connectors: [fakeUpstream().connector] });
+    const { clientId } = await h.registerClient({
+      appName: "Stranger",
+      firstParty: false,
+      redirectUri: REDIRECT_URI,
+    });
+    const { challenge } = await pkce();
+    for (const response of [
+      await h.fetchBroker(authorizeUrl(h, { clientId, challenge })),
+      await h.fetchBroker(authorizeUrl(h, { clientId: "cl_unknown", challenge })),
+    ]) {
+      expect(response.headers.get("content-security-policy")).toBe("frame-ancestors 'none'");
+      expect(response.headers.get("x-frame-options")).toBe("DENY");
+    }
   });
 });
 
@@ -682,6 +813,63 @@ describe("email connector", () => {
     expect(claims["email"]).toBe("nicu@example.com");
     expect(claims["email_verified"]).toBe(true);
     expect(claims["connector"]).toBe("email");
+  });
+
+  test("a chooser request's email steps need the cookie, even with the right code", async () => {
+    const codes: string[] = [];
+    const h = await createHarness({
+      // @ts-expect-error a stand-in function reference; the harness replaces ctx.runAction.
+      connectors: [email({ send: "stand-in" })],
+      runAction: async (_reference, args) => {
+        if (
+          typeof args === "object" &&
+          args !== null &&
+          "code" in args &&
+          typeof args.code === "string"
+        ) {
+          codes.push(args.code);
+        }
+        return null;
+      },
+    });
+    const { clientId } = await h.registerClient({
+      appName: "Stranger",
+      firstParty: false,
+      redirectUri: REDIRECT_URI,
+    });
+    const { challenge } = await pkce();
+    const page = await h.fetchBroker(authorizeUrl(h, { clientId, challenge }));
+    const cookie = (page.headers.get("set-cookie") ?? "").split(";")[0] ?? "";
+    const choose = (await page.text()).match(/href="([^"]*connector=email)"/)?.[1] ?? "";
+    const chooseUrl = `${ISSUER}${choose.replace(/&amp;/g, "&")}`;
+    const requestId = new URL(chooseUrl).searchParams.get("request") ?? "";
+    expect((await h.fetchBroker(chooseUrl, { headers: { Cookie: cookie } })).status).toBe(200);
+    const post = (fields: Record<string, string>, headers: Record<string, string>) =>
+      h.fetchBroker(`${ISSUER}/connectors/email`, {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded", ...headers },
+        body: new URLSearchParams({ request: requestId, ...fields }).toString(),
+      });
+
+    expect((await post({ step: "send", email: "a@b.co" }, {})).status).toBe(400);
+    expect(codes).toHaveLength(0);
+    expect((await post({ step: "send", email: "a@b.co" }, { Cookie: cookie })).status).toBe(200);
+    expect(codes).toHaveLength(1);
+
+    const refused = await post({ step: "verify", code: codes[0] ?? "" }, {});
+    expect(refused.status).toBe(400);
+    expect(refused.headers.get("location")).toBeNull();
+    expect(await h.t.query(api.authRequests.get, { requestId })).toMatchObject({
+      status: "emailSent",
+      emailAttempts: 0,
+    });
+
+    const ok = await post({ step: "verify", code: codes[0] ?? "" }, { Cookie: cookie });
+    expect(ok.status).toBe(302);
+    expect(new URL(ok.headers.get("location") ?? "").searchParams.get("code")).toBeTruthy();
+    expect(ok.headers.get("set-cookie")).toBe(
+      `__Host-broker_txn_${requestId}=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0`,
+    );
   });
 
   test("the fifth miss locks the request", async () => {
@@ -917,5 +1105,26 @@ describe("cleanup", () => {
     });
     const remaining = await h.t.query(api.clients.listByApp, { appId: "a" });
     expect(remaining.map((c) => c.clientId).sort()).toEqual(["preview-new", "prod-old"]);
+  });
+
+  test("one call drains a table that holds more than one batch", async () => {
+    const h = await createHarness({ connectors: [fakeUpstream().connector] });
+    vi.useFakeTimers();
+    const now = Date.now();
+    await h.t.run(async (ctx) => {
+      for (let row = 0; row < 450; row++) {
+        await ctx.db.insert("emailSends", { emailHash: `hash-${row}`, at: now - 2 * 3_600_000 });
+      }
+      await ctx.db.insert("emailSends", { emailHash: "recent", at: now });
+    });
+    const counts = await h.t.mutation(api.lifecycle.cleanup, {
+      now,
+      previewClientMaxAgeMs: 30 * 86_400_000,
+      signInRetentionMs: 90 * 86_400_000,
+    });
+    expect(counts.emailSends).toBe(200);
+    await h.t.finishAllScheduledFunctions(vi.runAllTimers);
+    const left = await h.t.run(async (ctx) => await ctx.db.query("emailSends").collect());
+    expect(left.map((row) => row.emailHash)).toEqual(["recent"]);
   });
 });

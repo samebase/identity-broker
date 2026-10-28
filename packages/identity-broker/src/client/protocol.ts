@@ -30,6 +30,12 @@ function invalid<T>(status: number, error: string, description: string): Validat
   return { ok: false, status, error, description };
 }
 
+/** RFC 6749 sections 3.1 and 3.2: a request parameter must not be included more than once. */
+function hasRepeatedParameter(params: URLSearchParams): boolean {
+  const names = [...params.keys()];
+  return new Set(names).size !== names.length;
+}
+
 function isLoopbackHost(hostname: string): boolean {
   return hostname === "localhost" || hostname === "127.0.0.1" || hostname === "[::1]";
 }
@@ -192,11 +198,15 @@ export type AuthorizeInput = {
 /**
  * The first half of /authorize validation: the parameters that identify the client and where to
  * send errors. Everything else is checked by `validateAuthorizeRest` once the client is known, so
- * those errors can go back to the registered redirect URI.
+ * those errors can go back to the registered redirect URI. A repeated parameter of any name is
+ * refused first, so an ambiguous `client_id` or `redirect_uri` never picks a redirect target.
  */
 export function validateAuthorizeTarget(
   params: URLSearchParams,
 ): Validation<{ clientId: string; redirectUri: string }> {
+  if (hasRepeatedParameter(params)) {
+    return invalid(400, "invalid_request", "A parameter is repeated.");
+  }
   const clientId = params.get("client_id")?.trim() ?? "";
   if (clientId.length === 0) {
     return invalid(400, "invalid_request", "client_id is required.");
@@ -286,8 +296,7 @@ export function readClientAuthentication(
   authorization: string | null,
   params: URLSearchParams,
 ): Validation<TokenInput["client"]> {
-  const names = [...params.keys()];
-  if (new Set(names).size !== names.length) {
+  if (hasRepeatedParameter(params)) {
     return invalid(400, "invalid_request", "A parameter is repeated.");
   }
   if (authorization !== null) {

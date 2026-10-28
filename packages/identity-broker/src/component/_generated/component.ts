@@ -89,7 +89,12 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
       claimUpstream: FunctionReference<
         "mutation",
         "internal",
-        { connector: string; now: number; upstreamStateHash: string },
+        {
+          connector: string;
+          now: number;
+          txnCookieHashes: Array<string>;
+          upstreamStateHash: string;
+        },
         | {
             connector: string;
             freshLogin: boolean;
@@ -100,7 +105,13 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
             upstreamCodeVerifier: string;
             upstreamNonce?: string;
           }
-        | { redirectUri: string; state?: string; status: "expired" }
+        | {
+            redirectUri: string;
+            requestId: string;
+            state?: string;
+            status: "expired";
+          }
+        | { status: "unbound" }
         | { status: "missing" },
         Name
       >;
