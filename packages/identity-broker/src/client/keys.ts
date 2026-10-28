@@ -1,17 +1,28 @@
 import { exportJWK, generateKeyPair, importJWK, type CryptoKey, type JWK } from "jose";
 import { asRecord } from "./protocol.js";
+import { randomToken } from "./subject.js";
 
 export const SIGNING_ALGORITHM = "RS256";
 
-/** How long a retired key's public half stays in the JWKS: longer than any token it signed lives. */
-export const KEY_OVERLAP_MS = 14 * 24 * 60 * 60 * 1000;
+/** The id_token lives this long: the app's callback redeems the code and reads it at once. */
+export const ID_TOKEN_TTL_SECONDS = 5 * 60;
+
+/** The JWKS's Cache-Control max-age: how long a verifier may keep the JWKS it fetched. */
+export const JWKS_MAX_AGE_SECONDS = 5 * 60;
+
+/**
+ * How long a retired key's public half stays in the JWKS, counted from `keys --rotate`: the id_token
+ * lifetime, so a token the retired key signed just before the hub read the new key set verifies
+ * until its `exp`, plus one JWKS max-age as the margin for verifiers' caches and clocks and for the
+ * time the new key set takes to reach the hub's env.
+ */
+export const KEY_OVERLAP_MS = (ID_TOKEN_TTL_SECONDS + JWKS_MAX_AGE_SECONDS) * 1000;
 
 /**
  * The content of the `IDENTITY_BROKER_KEYS` env var: one current private key, the public halves of
  * recently retired keys, and the pairwise salt. `identity-broker keys` writes it.
  */
 export type KeySet = {
-  version: 1;
   /** Created once with the first key set and never rotated: a new salt changes every subject. */
   pairwiseSalt: string;
   keys: Array<
@@ -30,32 +41,16 @@ function publicHalf(jwk: JWK): JWK {
   return copy;
 }
 
-function randomKid(): string {
-  const bytes = new Uint8Array(12);
-  crypto.getRandomValues(bytes);
-  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
-}
-
-function randomSalt(): string {
-  const bytes = new Uint8Array(32);
-  crypto.getRandomValues(bytes);
-  return btoa(String.fromCharCode(...bytes))
-    .replace(/\+/g, "-")
-    .replace(/\//g, "_")
-    .replace(/=+$/, "");
-}
-
+/** A new RSA key. Its kid lives on the key set entry; the JWKS adds `alg` and `use`. */
 async function freshKey(): Promise<{ kid: string; privateJwk: JWK }> {
-  const kid = randomKid();
   const { privateKey } = await generateKeyPair(SIGNING_ALGORITHM, { extractable: true });
-  const privateJwk = await exportJWK(privateKey);
-  return { kid, privateJwk: { ...privateJwk, kid, alg: SIGNING_ALGORITHM, use: "sig" } };
+  return { kid: randomToken(12), privateJwk: await exportJWK(privateKey) };
 }
 
-/** A new key set: one current key and a salt. */
+/** A new key set: one current key and a salt of 32 random bytes. */
 export async function createKeySet(): Promise<KeySet> {
   const key = await freshKey();
-  return { version: 1, pairwiseSalt: randomSalt(), keys: [{ status: "current", ...key }] };
+  return { pairwiseSalt: randomToken(32), keys: [{ status: "current", ...key }] };
 }
 
 /**
@@ -77,11 +72,7 @@ export async function rotateKeySet(keySet: KeySet, now = Date.now()): Promise<Ke
     }
     return entry.retiredAt + KEY_OVERLAP_MS > now ? [entry] : [];
   });
-  return {
-    version: 1,
-    pairwiseSalt: keySet.pairwiseSalt,
-    keys: [{ status: "current", ...key }, ...kept],
-  };
+  return { pairwiseSalt: keySet.pairwiseSalt, keys: [{ status: "current", ...key }, ...kept] };
 }
 
 /**
@@ -90,7 +81,7 @@ export async function rotateKeySet(keySet: KeySet, now = Date.now()): Promise<Ke
  */
 export async function rotateKeySetWithoutOverlap(keySet: KeySet): Promise<KeySet> {
   const key = await freshKey();
-  return { version: 1, pairwiseSalt: keySet.pairwiseSalt, keys: [{ status: "current", ...key }] };
+  return { pairwiseSalt: keySet.pairwiseSalt, keys: [{ status: "current", ...key }] };
 }
 
 /**
@@ -102,13 +93,10 @@ const BASE64URL = /^(?:[A-Za-z0-9_-]{4})*[A-Za-z0-9_-]{2,4}$/;
 /** The members of an RSA private JWK (RFC 7518 section 6.3); a current key carries every one. */
 const RSA_PRIVATE_MEMBERS = ["n", "e", "d", "p", "q", "dp", "dq", "qi"] as const;
 const RSA_PUBLIC_MEMBERS = ["n", "e"] as const;
-/** What `createKeySet` writes beside the key material, and the JWKS publishes. */
-const JWK_PARAMETERS = ["kid", "alg", "use"] as const;
 
 /**
- * An RSA JWK whose `members` are base64url strings, rebuilt from those members and the string
- * parameters, so a private member left in a retired public key never reaches the JWKS. `where`
- * names the JWK in the error.
+ * An RSA JWK whose `members` are base64url strings, rebuilt from those members alone, so a private
+ * member left in a retired public key never reaches the JWKS. `where` names the JWK in the error.
  */
 function rsaJwk(
   value: unknown,
@@ -127,14 +115,6 @@ function rsaJwk(
     }
     jwk[name] = member;
   }
-  for (const name of JWK_PARAMETERS) {
-    const parameter = record[name];
-    if (typeof parameter === "string") {
-      jwk[name] = parameter;
-    } else if (parameter !== undefined) {
-      throw new Error(`${where}.${name} must be a string`);
-    }
-  }
   return jwk;
 }
 
@@ -149,8 +129,8 @@ export function parseKeySet(raw: string | undefined): KeySet {
     );
   }
   const record = asRecord(JSON.parse(raw));
-  if (record["version"] !== 1 || !Array.isArray(record["keys"])) {
-    throw new Error("IDENTITY_BROKER_KEYS is not a version 1 key set");
+  if (!Array.isArray(record["keys"])) {
+    throw new Error("IDENTITY_BROKER_KEYS is not a key set");
   }
   // `createKeySet` writes 32 random bytes. A short salt lets anyone who knows an upstream id, such
   // as a public GitHub user id, compute its subject for an app.
@@ -185,7 +165,7 @@ export function parseKeySet(raw: string | undefined): KeySet {
   if (keys.filter((key) => key.status === "current").length !== 1) {
     throw new Error("IDENTITY_BROKER_KEYS must hold exactly one current key");
   }
-  return { version: 1, pairwiseSalt: salt, keys };
+  return { pairwiseSalt: salt, keys };
 }
 
 export function currentKey(keySet: KeySet): { kid: string; privateJwk: JWK } {
@@ -207,18 +187,24 @@ export async function importSigningKey(keySet: KeySet): Promise<{ kid: string; k
 
 /**
  * The public JWKS: the current key and the retired keys still inside the overlap window, each under
- * its entry's kid, the kid the signer writes into a token header, whatever kid its JWK carries.
+ * its entry's kid, the kid the signer writes into a token header.
  */
 export function publicJwks(
   keySet: KeySet,
   now = Date.now(),
 ): { keys: Array<JWK & { kid: string }> } {
+  const published = (kid: string, jwk: JWK) => ({
+    ...jwk,
+    kid,
+    alg: SIGNING_ALGORITHM,
+    use: "sig",
+  });
   return {
     keys: keySet.keys.flatMap((entry) => {
       if (entry.status === "current") {
-        return [{ ...publicHalf(entry.privateJwk), kid: entry.kid }];
+        return [published(entry.kid, publicHalf(entry.privateJwk))];
       }
-      return entry.retiredAt + KEY_OVERLAP_MS > now ? [{ ...entry.publicJwk, kid: entry.kid }] : [];
+      return entry.retiredAt + KEY_OVERLAP_MS > now ? [published(entry.kid, entry.publicJwk)] : [];
     }),
   };
 }

@@ -20,7 +20,7 @@ async function weakKeySet(): Promise<string> {
   const privateJwk = await crypto.subtle.exportKey("jwk", pair.privateKey);
   return JSON.stringify({
     ...keySet,
-    keys: [{ kid, status: "current", privateJwk: { ...privateJwk, kid, use: "sig" } }],
+    keys: [{ kid, status: "current", privateJwk }],
   });
 }
 
@@ -45,6 +45,6 @@ test("rotation checks its output, so a key that cannot sign leaves with --no-ove
   );
   // An input that is not a key set is refused before anything rotates.
   for (const overlap of [true, false]) {
-    await expect(rotateKeys("{}", { overlap })).rejects.toThrow(/not a version 1 key set/);
+    await expect(rotateKeys("{}", { overlap })).rejects.toThrow(/not a key set/);
   }
 });

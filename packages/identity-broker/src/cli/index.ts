@@ -1,11 +1,12 @@
 #!/usr/bin/env node
-import { createKeySet } from "../client/keys.js";
+import { createKeySet, KEY_OVERLAP_MS } from "../client/keys.js";
 import { rotateKeys } from "./rotate.js";
 
 const USAGE = `identity-broker keys                         print a new key set for IDENTITY_BROKER_KEYS
 identity-broker keys --rotate                read the current key set on stdin, print the
                                              rotated one once it signs and verifies; the
-                                             retired public key stays for 14 days
+                                             retired public key stays in the JWKS for the
+                                             next ${KEY_OVERLAP_MS / 60_000} minutes, so set the output at once
 identity-broker keys --rotate --no-overlap   the same after a key compromise: retired keys are
                                              dropped at once; the salt is kept`;
 

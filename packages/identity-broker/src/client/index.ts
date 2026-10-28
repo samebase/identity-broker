@@ -19,7 +19,13 @@ import type {
 import { finishUpstream, startUpstream } from "./connectors/upstream.js";
 import { errorPage } from "./html.js";
 import { signIdToken, type IdentityClaims } from "./jwt.js";
-import { parseKeySet, publicJwks, SIGNING_ALGORITHM, type KeySet } from "./keys.js";
+import {
+  JWKS_MAX_AGE_SECONDS,
+  parseKeySet,
+  publicJwks,
+  SIGNING_ALGORITHM,
+  type KeySet,
+} from "./keys.js";
 import {
   hostAllowed,
   readBearerToken,
@@ -45,8 +51,6 @@ export type {
 } from "./connectors/types.js";
 export { github } from "./connectors/github.js";
 export { google } from "./connectors/google.js";
-export { createKeySet, parseKeySet, rotateKeySet, type KeySet } from "./keys.js";
-export { assertKeySetUsable } from "./jwt.js";
 
 export type IdentityBrokerConfig = {
   /** `components.identityBroker` of the host app. */
@@ -116,7 +120,9 @@ export function defineIdentityBroker(config: IdentityBrokerConfig) {
   );
 
   const jwks = httpActionGeneric(async () =>
-    json(publicJwks(keySet()), 200, { "Cache-Control": "public, max-age=300" }),
+    json(publicJwks(keySet()), 200, {
+      "Cache-Control": `public, max-age=${JWKS_MAX_AGE_SECONDS}`,
+    }),
   );
 
   const authorize = httpActionGeneric(async (ctx, request) => {

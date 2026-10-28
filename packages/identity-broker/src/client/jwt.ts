@@ -1,14 +1,12 @@
 import { createLocalJWKSet, jwtVerify, SignJWT } from "jose";
 import {
   currentKey,
+  ID_TOKEN_TTL_SECONDS,
   importSigningKey,
   publicJwks,
   SIGNING_ALGORITHM,
   type KeySet,
 } from "./keys.js";
-
-/** The id_token lives this long: the app's callback redeems the code and reads it at once. */
-export const TOKEN_TTL_SECONDS = 5 * 60;
 
 export type IdentityClaims = {
   sub: string;
@@ -40,7 +38,7 @@ export async function signIdToken(args: {
     .setIssuer(args.issuer)
     .setAudience(args.clientId)
     .setIssuedAt()
-    .setExpirationTime(`${TOKEN_TTL_SECONDS}s`)
+    .setExpirationTime(`${ID_TOKEN_TTL_SECONDS}s`)
     .sign(key);
 }
 

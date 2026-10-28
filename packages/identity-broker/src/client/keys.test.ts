@@ -1,6 +1,5 @@
-import { createLocalJWKSet, decodeProtectedHeader, jwtVerify } from "jose";
 import { describe, expect, test } from "vite-plus/test";
-import { assertKeySetUsable, signIdToken } from "./jwt.js";
+import { assertKeySetUsable } from "./jwt.js";
 import {
   createKeySet,
   currentKey,
@@ -20,7 +19,7 @@ describe("key set", () => {
     const jwks = publicJwks(parsed);
     expect(jwks.keys).toHaveLength(1);
     expect(jwks.keys[0]).not.toHaveProperty("d");
-    expect(jwks.keys[0]).toHaveProperty("kid");
+    expect(jwks.keys[0]).toMatchObject({ kid: currentKey(keySet).kid, alg: "RS256", use: "sig" });
   });
 
   test("rotation keeps the salt, retires the public half, drops it after the overlap", async () => {
@@ -49,7 +48,7 @@ describe("key set", () => {
 
   test("refuses incomplete sets", async () => {
     expect(() => parseKeySet(undefined)).toThrow(/IDENTITY_BROKER_KEYS/);
-    expect(() => parseKeySet("{}")).toThrow(/version 1/);
+    expect(() => parseKeySet("{}")).toThrow(/not a key set/);
     const keySet = await createKeySet();
     const noCurrent = { ...keySet, keys: [] };
     expect(() => parseKeySet(JSON.stringify(noCurrent))).toThrow(/exactly one current/);
@@ -60,10 +59,7 @@ describe("key set validation", () => {
   const RSA_PRIVATE_MEMBERS = ["n", "e", "d", "p", "q", "dp", "dq", "qi"] as const;
 
   /** The key set as JSON, with its one current key's privateJwk replaced. */
-  function withPrivateJwk(
-    keySet: Awaited<ReturnType<typeof createKeySet>>,
-    privateJwk: Record<string, unknown>,
-  ) {
+  function withPrivateJwk(keySet: Awaited<ReturnType<typeof createKeySet>>, privateJwk: object) {
     const { kid } = currentKey(keySet);
     return JSON.stringify({ ...keySet, keys: [{ kid, status: "current", privateJwk }] });
   }
@@ -135,9 +131,6 @@ describe("key set validation", () => {
         );
       }
     }
-    expect(() => parseKeySet(withPrivateJwk(keySet, { ...privateJwk, alg: 256 }))).toThrow(
-      `${where}.alg must be a string`,
-    );
   });
 
   test("a retired key must be an RSA public JWK, and only its public members are kept", async () => {
@@ -177,51 +170,9 @@ describe("key set validation", () => {
       ["sign", "verify"],
     );
     const privateJwk = await crypto.subtle.exportKey("jwk", small.privateKey);
-    const parsed = parseKeySet(withPrivateJwk(keySet, { ...privateJwk, kid, use: "sig" }));
+    const parsed = parseKeySet(withPrivateJwk(keySet, privateJwk));
     await expect(assertKeySetUsable(parsed)).rejects.toThrow(
       `IDENTITY_BROKER_KEYS key "${kid}" fails at sign: RS256 requires key modulusLength to be 2048 bits or larger`,
     );
-  });
-
-  test("the JWKS publishes the current key under its entry's kid, so a token signed with it verifies", async () => {
-    const keySet = await createKeySet();
-    const { kid, privateJwk } = currentKey(keySet);
-    const parsed = parseKeySet(withPrivateJwk(keySet, { ...privateJwk, kid: "another-kid" }));
-    expect(publicJwks(parsed).keys.map((jwk) => jwk.kid)).toEqual([kid]);
-    const token = await signIdToken({
-      keySet: parsed,
-      issuer: "https://auth.test",
-      clientId: "cl_test",
-      claims: { sub: "s", connector: "fake", connector_account_id: "42" },
-      nonce: undefined,
-    });
-    expect(decodeProtectedHeader(token).kid).toBe(kid);
-    await expect(
-      jwtVerify(token, createLocalJWKSet(publicJwks(parsed)), {
-        issuer: "https://auth.test",
-        audience: "cl_test",
-      }),
-    ).resolves.toMatchObject({ payload: { sub: "s" } });
-    await expect(assertKeySetUsable(parsed)).resolves.toBeUndefined();
-  });
-
-  test("a key the JWKS publishes for another algorithm fails at verification, current or retired", async () => {
-    const rotated = await rotateKeySet(await createKeySet());
-    const [current, retired] = rotated.keys;
-    if (current?.status !== "current" || retired?.status !== "retired") {
-      throw new Error("rotateKeySet puts the new key first and the retired key second");
-    }
-    await expect(
-      assertKeySetUsable({
-        ...rotated,
-        keys: [{ ...current, privateJwk: { ...current.privateJwk, alg: "RS512" } }, retired],
-      }),
-    ).rejects.toThrow(`IDENTITY_BROKER_KEYS key "${current.kid}" fails at verify`);
-    await expect(
-      assertKeySetUsable({
-        ...rotated,
-        keys: [current, { ...retired, publicJwk: { ...retired.publicJwk, alg: "RS512" } }],
-      }),
-    ).rejects.toThrow(`IDENTITY_BROKER_KEYS key "${retired.kid}" fails at verify`);
   });
 });
