@@ -1,6 +1,6 @@
 {
   "name": "@samebase/alchemy-identity-hub",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "An Alchemy v2 resource that registers a Convex deployment as an OAuth client of an identity hub.",
   "license": "Apache-2.0",
   "repository": {
