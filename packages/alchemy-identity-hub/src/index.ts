@@ -5,8 +5,9 @@
 // registration token as a Bearer token answers 201 with a client_id and a client_secret. It has no
 // endpoint to read, change, or delete a client (no RFC 7592), so:
 // - A changed issuer, redirectUri, or deploymentType replaces the resource: it registers a new
-//   client. The old client stays on the hub. The hub removes a preview client after 30 days without
-//   a sign-in, and keeps a production or development client until the app is deleted there.
+//   client. The old client stays on the hub. The hub prunes an idle preview client only when its
+//   host sets previewClientIdleDays, and this resource does not register a pruned client again.
+//   The hub keeps a production or development client until the app is deleted there.
 // - A changed clientName, softwareVersion, or registrationToken makes no hub call, and the
 //   attributes stay the ones the client was registered with. The token is used only to register.
 // - read returns the state as it is, and delete makes no hub call.
@@ -255,7 +256,7 @@ const leaveOnHub = (output: ClientAttributes) =>
   Effect.logInfo(
     `Client ${output.clientId} stays registered on ${output.issuer}: the hub has no endpoint to delete it. ${
       output.deploymentType === "preview"
-        ? "The hub removes a preview client after 30 days without a sign-in."
+        ? "The hub prunes an idle preview client only when its host sets previewClientIdleDays, and this resource does not register a pruned client again."
         : `The hub keeps a ${output.deploymentType} client until the app is deleted there.`
     }`,
   );

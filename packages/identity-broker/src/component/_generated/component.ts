@@ -97,6 +97,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         },
         | {
             connector: string;
+            createdAt: number;
             freshLogin: boolean;
             redirectUri: string;
             requestId: string;
@@ -441,7 +442,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         "internal",
         {
           now: number;
-          previewClientMaxAgeMs: number;
+          previewClientMaxAgeMs?: number;
           signInRetentionMs: number;
         },
         {

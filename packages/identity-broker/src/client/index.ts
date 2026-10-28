@@ -15,9 +15,8 @@ import type {
   EmailConnector,
   OauthConnector,
   OidcConnector,
-  UpstreamIdentity,
 } from "./connectors/types.js";
-import { finishUpstream, startUpstream } from "./connectors/upstream.js";
+import { finishUpstream, startUpstream, type UpstreamFinish } from "./connectors/upstream.js";
 import { chooserPage, emailAddressPage, emailCodePage, errorPage } from "./html.js";
 import {
   signAccessToken,
@@ -59,6 +58,7 @@ export { github } from "./connectors/github.js";
 export { google } from "./connectors/google.js";
 export { email } from "./connectors/email.js";
 export { createKeySet, parseKeySet, rotateKeySet, type KeySet } from "./keys.js";
+export { assertKeySetUsable } from "./jwt.js";
 
 export type IdentityBrokerConfig = {
   /** `components.identityBroker` of the host app. */
@@ -68,6 +68,11 @@ export type IdentityBrokerConfig = {
   /** The content of `IDENTITY_BROKER_KEYS`, read in the request. */
   keys: () => string | undefined;
   connectors: Connector[];
+  /**
+   * Days without a sign-in after which `cleanup` deletes a preview client. Absent: `cleanup` deletes
+   * no client, because a deployment whose client was deleted does not register again by itself.
+   */
+  previewClientIdleDays?: number;
 };
 
 /** A request lives this long from /authorize to the code redirect. */
@@ -75,12 +80,13 @@ const AUTH_REQUEST_TTL_MS = 10 * 60 * 1000;
 /** A code is redeemed by the client's callback at once. */
 const CODE_TTL_MS = 60 * 1000;
 const EMAIL_CODE_TTL_MS = 10 * 60 * 1000;
+/** How far an upstream `auth_time` may sit outside the request's lifetime: the clocks differ. */
+const AUTH_TIME_SKEW_SECONDS = 60;
 const EMAIL_MAX_ATTEMPTS = 5;
 /** The scopes the broker grants; any other requested scope is dropped. */
 const SCOPES = ["openid", "email", "profile"];
 const REGISTRATION_TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1000;
-/** Lifecycle values the host's cron passes to `cleanup`. */
-export const PREVIEW_CLIENT_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
+/** How long `cleanup` keeps an audit row of an issued id_token. */
 export const SIGN_IN_RETENTION_MS = 90 * 24 * 60 * 60 * 1000;
 
 type Ctx = GenericActionCtx<GenericDataModel>;
@@ -107,6 +113,11 @@ export function defineIdentityBroker(config: IdentityBrokerConfig) {
   }
   if (connectors.size === 0) {
     throw new Error("At least one connector is required");
+  }
+  const { previewClientIdleDays } = config;
+  // Zero or less would delete every preview client at the next cleanup.
+  if (previewClientIdleDays !== undefined && !(previewClientIdleDays > 0)) {
+    throw new Error("previewClientIdleDays must be a positive number of days");
   }
 
   /** The transaction cookies the browser sent, by request id. */
@@ -487,9 +498,9 @@ export function defineIdentityBroker(config: IdentityBrokerConfig) {
           description: "The sign-in expired.",
         });
       }
-      let identity: UpstreamIdentity;
+      let upstream: UpstreamFinish;
       try {
-        identity = await finishUpstream({
+        upstream = await finishUpstream({
           connector,
           callbackUrl: callbackUrl(connector),
           currentUrl: url,
@@ -527,11 +538,32 @@ export function defineIdentityBroker(config: IdentityBrokerConfig) {
           description: `${connector.label} sign-in failed.`,
         });
       }
+      let authTime = now;
+      if (claim.freshLogin) {
+        // prompt=login and max_age=0 went upstream, but a provider can still reuse its session;
+        // only the id_token's auth_time attests a login during this request. It must fall between
+        // the request's creation and now, each widened by the clock skew; auth_time is in whole
+        // seconds. A plain OAuth connector has no auth_time, and startConnector already refused it.
+        const { authTimeSeconds } = upstream;
+        if (
+          authTimeSeconds === undefined ||
+          authTimeSeconds < Math.floor(claim.createdAt / 1000) - AUTH_TIME_SKEW_SECONDS ||
+          authTimeSeconds > Math.floor(now / 1000) + AUTH_TIME_SKEW_SECONDS
+        ) {
+          await ctx.runMutation(component.authRequests.abandon, { requestId: claim.requestId });
+          return authorizationError({
+            ...back,
+            error: "login_required",
+            description: `${connector.label} did not confirm a new login, which prompt=login or max_age asked for.`,
+          });
+        }
+        authTime = authTimeSeconds * 1000;
+      }
       const code = randomToken(32);
       const completed = await ctx.runMutation(component.authRequests.complete, {
         requestId: claim.requestId,
-        identity: { connector: connector.name, ...identity },
-        authTime: now,
+        identity: { connector: connector.name, ...upstream.identity },
+        authTime,
         codeHash: await sha256Hex(code),
         codeExpiresAt: now + CODE_TTL_MS,
         now,
@@ -1064,7 +1096,9 @@ export function defineIdentityBroker(config: IdentityBrokerConfig) {
           handler: async (ctx) =>
             await ctx.runMutation(component.lifecycle.cleanup, {
               now: Date.now(),
-              previewClientMaxAgeMs: PREVIEW_CLIENT_MAX_AGE_MS,
+              ...(previewClientIdleDays === undefined
+                ? {}
+                : { previewClientMaxAgeMs: previewClientIdleDays * 24 * 60 * 60 * 1000 }),
               signInRetentionMs: SIGN_IN_RETENTION_MS,
             }),
         }),

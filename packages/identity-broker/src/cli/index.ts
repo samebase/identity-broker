@@ -1,14 +1,11 @@
 #!/usr/bin/env node
-import {
-  createKeySet,
-  parseKeySet,
-  rotateKeySet,
-  rotateKeySetWithoutOverlap,
-} from "../client/keys.js";
+import { createKeySet } from "../client/keys.js";
+import { rotateKeys } from "./rotate.js";
 
 const USAGE = `identity-broker keys                         print a new key set for IDENTITY_BROKER_KEYS
-identity-broker keys --rotate                read the current key set on stdin, print the rotated
-                                             one; the retired public key stays for 14 days
+identity-broker keys --rotate                read the current key set on stdin, print the
+                                             rotated one once it signs and verifies; the
+                                             retired public key stays for 14 days
 identity-broker keys --rotate --no-overlap   the same after a key compromise: retired keys are
                                              dropped at once; the salt is kept`;
 
@@ -33,10 +30,7 @@ async function main(argv: string[]): Promise<number> {
     return 2;
   }
   if (rotate) {
-    const current = parseKeySet(await readStdin());
-    const rotated = noOverlap
-      ? await rotateKeySetWithoutOverlap(current)
-      : await rotateKeySet(current);
+    const rotated = await rotateKeys(await readStdin(), { overlap: !noOverlap });
     process.stdout.write(`${JSON.stringify(rotated)}\n`);
     return 0;
   }

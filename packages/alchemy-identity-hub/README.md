@@ -44,9 +44,9 @@ client.
   Auth's generic OAuth method posts the client credentials in the body; the hub's default is
   `client_secret_basic`.
 - A changed normalized `issuer`, `redirectUri`, or `deploymentType` replaces the resource: a new
-  client is registered. The old client stays on the hub, which removes a preview client after 30
-  days without a sign-in and keeps a production or development client until the app is deleted
-  there.
+  client is registered. The old client stays on the hub, which prunes an idle preview client only
+  when its host sets `previewClientIdleDays` and keeps a production or development client until the
+  app is deleted there.
 - A changed `clientName`, `softwareVersion`, or `registrationToken` makes no hub call and keeps the
   attributes. The token is used only to register.
 - Read returns the state as it is. Destroy makes no hub call and logs that the client stays.
@@ -55,8 +55,9 @@ client.
 
 ## Limits
 
-- The hub removes a preview client after 30 days without a sign-in. A preview that is redeployed
-  after that long keeps a client in its state that the hub no longer has. To recover, run
+- The hub prunes an idle preview client only when its host sets `previewClientIdleDays`, and this
+  resource does not register a pruned client again. A preview that is redeployed after its client
+  was pruned keeps a client in its state that the hub no longer has. To recover, run
   `alchemy destroy --stage <stage>`, then deploy.
 - A deploy that fails after the hub created the client and before Alchemy saved the client to state
   leaves that client on the hub. The next deploy registers another client.

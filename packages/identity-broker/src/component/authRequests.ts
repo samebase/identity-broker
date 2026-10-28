@@ -125,6 +125,8 @@ const vClaimResult = union(
     upstreamCodeVerifier: string(),
     upstreamNonce: optional(string()),
     freshLogin: boolean(),
+    /** When /authorize stored the request: an upstream `auth_time` before it is an old session. */
+    createdAt: number(),
     ...vReturn.fields,
   }),
   object({ status: literal("expired"), requestId: string(), ...vReturn.fields }),
@@ -180,6 +182,7 @@ export const claimUpstream = mutation({
       upstreamCodeVerifier: request.upstreamCodeVerifier,
       ...optionalField("upstreamNonce", request.upstreamNonce),
       freshLogin: request.freshLogin,
+      createdAt: request.createdAt,
       ...back,
     };
   },

@@ -4,8 +4,11 @@ import { afterEach, describe, expect, test, vi } from "vite-plus/test";
 import { api } from "../component/_generated/api.js";
 import { email } from "./connectors/email.js";
 import { google } from "./connectors/google.js";
+import { defineIdentityBroker } from "./index.js";
 import {
+  component,
   createHarness,
+  fakeOidcUpstream,
   fakeUpstream,
   ISSUER,
   pkce,
@@ -396,13 +399,14 @@ describe("authorization code flow with an OAuth connector", () => {
       "login_required",
     );
 
-    // An OAuth connector cannot force a fresh login.
-    const fresh = await h.fetchBroker(
-      authorizeUrl(h, { clientId, challenge, extra: { prompt: "login" } }),
-    );
-    expect(new URL(fresh.headers.get("location") ?? "").searchParams.get("error")).toBe(
-      "login_required",
-    );
+    // An OAuth connector cannot force a fresh login, whether prompt=login or max_age asked for it:
+    // the answer goes back to the client before anything goes upstream.
+    for (const extra of [{ prompt: "login" }, { max_age: "300" }]) {
+      const fresh = await h.fetchBroker(authorizeUrl(h, { clientId, challenge, extra }));
+      const location = new URL(fresh.headers.get("location") ?? "");
+      expect(location.origin + location.pathname).toBe(REDIRECT_URI);
+      expect(location.searchParams.get("error")).toBe("login_required");
+    }
   });
 
   test("Google documents no prompt=login, so a fresh login through it is refused", async () => {
@@ -423,6 +427,139 @@ describe("authorization code flow with an OAuth connector", () => {
       expect(location.searchParams.get("error_description")).toBe(
         "Google cannot reauthenticate the user, which prompt=login or max_age asked for.",
       );
+    }
+  });
+
+  /**
+   * One sign-in through the fake OIDC provider. `authTime` gets the second the request was created
+   * in and returns the `auth_time` the provider signs (`undefined`: none).
+   */
+  async function oidcSignIn(
+    h: Harness,
+    idp: Awaited<ReturnType<typeof fakeOidcUpstream>>,
+    args: {
+      clientId: string;
+      extra: Record<string, string>;
+      authTime: (createdSecond: number) => number | undefined;
+    },
+  ) {
+    const { challenge, verifier } = await pkce();
+    const started = await h.fetchBroker(
+      authorizeUrl(h, { clientId: args.clientId, challenge, extra: args.extra }),
+    );
+    const upstream = new URL(started.headers.get("location") ?? "");
+    expect(upstream.origin).toBe("https://server.example.com");
+    const state = upstream.searchParams.get("state") ?? "";
+    const stateHash = await sha256Hex(state);
+    const stored = await h.t.run(
+      async (ctx) =>
+        await ctx.db
+          .query("authRequests")
+          .withIndex("by_upstream_state_hash", (q) => q.eq("upstreamStateHash", stateHash))
+          .unique(),
+    );
+    if (stored === null) {
+      throw new Error("/authorize stored no request for the upstream state");
+    }
+    const createdSecond = Math.floor(stored.createdAt / 1000);
+    idp.nextIdToken({
+      nonce: upstream.searchParams.get("nonce") ?? "",
+      authTime: args.authTime(createdSecond),
+    });
+    const callback = new URL(upstream.searchParams.get("redirect_uri") ?? "");
+    callback.searchParams.set("code", "upstream-code");
+    callback.searchParams.set("state", state);
+    const back = await h.fetchBroker(callback);
+    expect(back.status).toBe(302);
+    return {
+      prompt: upstream.searchParams.get("prompt"),
+      maxAge: upstream.searchParams.get("max_age"),
+      location: new URL(back.headers.get("location") ?? ""),
+      verifier,
+      requestId: stored.requestId,
+      createdSecond,
+    };
+  }
+
+  test("a fresh login completes only with an upstream auth_time inside the request, give or take 60 seconds", async () => {
+    // The clock stands still, so the request is created and its callback runs in one second.
+    vi.useFakeTimers({ now: 1_800_000_000_500, toFake: ["Date"] });
+    const idp = await fakeOidcUpstream();
+    const h = await createHarness({ connectors: [idp.connector] });
+    const { clientId, clientSecret } = await h.registerClient({
+      appName: "Bristol",
+      firstParty: true,
+      redirectUri: REDIRECT_URI,
+    });
+    // Both ways to ask for a fresh login, against an upstream auth_time that is missing, or this
+    // many seconds from the request's second: past each edge of the 60-second skew, on it, inside.
+    const accepted = new Map([
+      [-61, false],
+      [-60, true],
+      [-1, true],
+      [0, true],
+      [60, true],
+      [61, false],
+    ]);
+    for (const extra of [{ prompt: "login" }, { max_age: "300" }]) {
+      for (const offset of [undefined, ...accepted.keys()]) {
+        const signIn = await oidcSignIn(h, idp, {
+          clientId,
+          extra,
+          authTime: (created) => (offset === undefined ? undefined : created + offset),
+        });
+        expect(signIn.createdSecond).toBe(1_800_000_000);
+        expect(signIn.prompt).toBe("login");
+        expect(signIn.maxAge).toBe("0");
+        if (offset === undefined || !accepted.get(offset)) {
+          expect(signIn.location.origin + signIn.location.pathname).toBe(REDIRECT_URI);
+          expect(signIn.location.searchParams.get("error")).toBe("login_required");
+          expect(signIn.location.searchParams.get("error_description")).toBe(
+            "IdP did not confirm a new login, which prompt=login or max_age asked for.",
+          );
+          expect(signIn.location.searchParams.get("code")).toBeNull();
+          // The request is abandoned: nothing is left to finish.
+          expect(await h.t.query(api.authRequests.get, { requestId: signIn.requestId })).toBeNull();
+          continue;
+        }
+        const code = signIn.location.searchParams.get("code") ?? "";
+        expect(code).not.toBe("");
+        const tokens = await exchange(h, {
+          code,
+          clientId,
+          clientSecret,
+          verifier: signIn.verifier,
+        });
+        expect(tokens.status).toBe(200);
+        const idToken = decodeJwt((await tokens.json()).id_token);
+        expect(idToken.auth_time).toBe(signIn.createdSecond + offset);
+      }
+    }
+  });
+
+  test("without a fresh login, the sign-in completes at the hub's time, upstream auth_time or not", async () => {
+    const idp = await fakeOidcUpstream();
+    const h = await createHarness({ connectors: [idp.connector] });
+    const { clientId, clientSecret } = await h.registerClient({
+      appName: "Bristol",
+      firstParty: true,
+      redirectUri: REDIRECT_URI,
+    });
+    for (const offset of [undefined, -3600]) {
+      const signIn = await oidcSignIn(h, idp, {
+        clientId,
+        extra: {},
+        authTime: (created) => (offset === undefined ? undefined : created + offset),
+      });
+      expect(signIn.prompt).toBeNull();
+      expect(signIn.maxAge).toBeNull();
+      const code = signIn.location.searchParams.get("code") ?? "";
+      expect(code).not.toBe("");
+      const tokens = await exchange(h, { code, clientId, clientSecret, verifier: signIn.verifier });
+      expect(tokens.status).toBe(200);
+      const idToken = decodeJwt((await tokens.json()).id_token);
+      // The callback's time, never the upstream's hour-old value.
+      expect(idToken.auth_time).toBeGreaterThanOrEqual(signIn.createdSecond);
     }
   });
 
@@ -1030,7 +1167,7 @@ describe("email send limits", () => {
 });
 
 describe("cleanup", () => {
-  test("drops expired requests, codes and tokens, idle preview clients, old audit rows", async () => {
+  test("drops expired requests, codes and tokens and old audit rows; idle preview clients only when asked", async () => {
     const h = await createHarness({ connectors: [fakeUpstream().connector] });
     const now = Date.now();
     await h.t.mutation(api.apps.create, {
@@ -1090,21 +1227,82 @@ describe("cleanup", () => {
       sub: "s",
       at: now - 100 * 86_400_000,
     });
-    const counts = await h.t.mutation(api.lifecycle.cleanup, {
-      now,
-      previewClientMaxAgeMs: 30 * 86_400_000,
-      signInRetentionMs: 90 * 86_400_000,
-    });
-    expect(counts).toEqual({
+    const clientIds = async () =>
+      (await h.t.query(api.clients.listByApp, { appId: "a" })).map((c) => c.clientId).sort();
+    // Without previewClientMaxAgeMs, no client goes, however idle.
+    expect(
+      await h.t.mutation(api.lifecycle.cleanup, { now, signInRetentionMs: 90 * 86_400_000 }),
+    ).toEqual({
       authRequests: 1,
       authorizationCodes: 0,
       registrationTokens: 1,
-      previewClients: 1,
+      previewClients: 0,
       signIns: 1,
       emailSends: 0,
     });
-    const remaining = await h.t.query(api.clients.listByApp, { appId: "a" });
-    expect(remaining.map((c) => c.clientId).sort()).toEqual(["preview-new", "prod-old"]);
+    expect(await clientIds()).toEqual(["preview-new", "preview-old", "prod-old"]);
+    // With it, the preview client idle longer goes; the production client stays.
+    expect(
+      await h.t.mutation(api.lifecycle.cleanup, {
+        now,
+        previewClientMaxAgeMs: 30 * 86_400_000,
+        signInRetentionMs: 90 * 86_400_000,
+      }),
+    ).toEqual({
+      authRequests: 0,
+      authorizationCodes: 0,
+      registrationTokens: 0,
+      previewClients: 1,
+      signIns: 0,
+      emailSends: 0,
+    });
+    expect(await clientIds()).toEqual(["preview-new", "prod-old"]);
+  });
+
+  test("the host's cleanup deletes idle preview clients only with previewClientIdleDays", async () => {
+    for (const previewClientIdleDays of [undefined, 30, 50]) {
+      const h = await createHarness({
+        connectors: [fakeUpstream().connector],
+        ...(previewClientIdleDays === undefined ? {} : { previewClientIdleDays }),
+      });
+      const now = Date.now();
+      await h.t.mutation(api.apps.create, {
+        appId: "a",
+        name: "A",
+        firstParty: true,
+        allowedCallbackHosts: ["app.test"],
+        createdAt: now,
+      });
+      await h.t.mutation(api.clients.create, {
+        clientId: "preview-40-days",
+        appId: "a",
+        secretHash: "h",
+        tokenEndpointAuthMethod: "client_secret_post",
+        redirectUri: REDIRECT_URI,
+        deploymentType: "preview",
+        clientName: "c",
+        softwareVersion: "v",
+        createdAt: now - 40 * 86_400_000,
+      });
+      const { cleanup } = h.broker.admin();
+      // @ts-expect-error internalMutationGeneric keeps the function as _handler; RegisteredMutation does not declare it. Its handler only calls ctx.runMutation, which an action ctx has.
+      const counts = await h.t.action(async (ctx) => await cleanup._handler(ctx, {}));
+      expect(counts).toMatchObject({ previewClients: previewClientIdleDays === 30 ? 1 : 0 });
+    }
+  });
+
+  test("previewClientIdleDays must be a positive number of days", () => {
+    for (const previewClientIdleDays of [0, -1, Number.NaN]) {
+      expect(() =>
+        defineIdentityBroker({
+          component,
+          issuer: ISSUER,
+          keys: () => undefined,
+          connectors: [fakeUpstream().connector],
+          previewClientIdleDays,
+        }),
+      ).toThrow("previewClientIdleDays must be a positive number of days");
+    }
   });
 
   test("one call drains a table that holds more than one batch", async () => {

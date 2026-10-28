@@ -15,6 +15,9 @@ The host schedules the component's `cleanup` daily from a cron, as the
 rows. One run drains: a batch deletes at most 200 rows per table, and a full batch schedules the
 next one at once, up to 50 more batches per run. A completed request lives until one minute after
 its authorization code expires, so cleanup never removes a request whose code can still be redeemed.
+Clients stay until `deleteClient` removes them. A host that sets `previewClientIdleDays` also has
+cleanup delete a preview client with no sign-in for that many days. It is off by default, because a
+deployment whose client was deleted does not register again by itself.
 
 ## Email send limits
 
@@ -38,12 +41,16 @@ the key set: a lost salt cannot be recreated.
 - No refresh tokens, no `offline_access`: apps keep their own sessions.
 - No sessions at the broker: `prompt=none` returns `login_required`; there is no logout protocol.
 - `response_type=code` only, so the "dynamic OP" profile of OIDC Core 15.2 is not met.
-- `max_age` is honored only as `prompt=login` upstream: `prompt=login` or any `max_age` sends
-  `prompt=login` to an OIDC connector whose provider documents that value, and the email code always
-  satisfies it. A connector that cannot reauthenticate answers `login_required`: a plain OAuth
-  connector such as GitHub, and Google, which documents no `login` value for `prompt`. A freshness
-  request against Google is refused rather than pretended. Other `prompt` values, such as `consent`
-  and `select_account`, answer `invalid_request`.
+- `max_age` is honored only as a fresh login: `prompt=login` or any `max_age` sends `prompt=login`
+  and `max_age=0` to an OIDC connector whose provider documents `prompt=login`, and the email code
+  always satisfies it. `max_age` obliges the provider to return `auth_time` (OIDC Core 3.1.2.1), and
+  a provider can still reuse its session, so the OIDC sign-in completes only when that `auth_time`
+  falls between the second the request was created and now, each widened by 60 seconds of clock
+  skew; a missing, older, or later `auth_time` answers `login_required`. A connector that cannot
+  reauthenticate answers `login_required` before anything goes upstream: a plain OAuth connector
+  such as GitHub, which has no `auth_time` to check, and Google, which documents no `login` value
+  for `prompt`. A freshness request against these is refused rather than pretended. Other `prompt`
+  values, such as `consent` and `select_account`, answer `invalid_request`.
 - Pairwise subjects use the app, not a `sector_identifier_uri`, as the sector, so previews on random
   hosts keep the same subjects.
 - Dynamically registered clients inherit the trust of their app: a first-party app's deployments
@@ -52,14 +59,21 @@ the key set: a lost salt cannot be recreated.
   `http://127.0.0.1:<port>/...` URI.
 - Email codes have no standard; the result is `email_verified: true`, no `amr`.
 - `auth_time` is the hub's completion time: when the broker completed the sign-in, after the
-  connector answered. It is not the upstream provider's authentication time, and the broker never
-  compares an upstream `auth_time` with `max_age`.
+  connector answered. After a fresh login through an OIDC connector it is the provider's `auth_time`
+  instead, which the broker checked against the request's lifetime. The broker never compares an
+  upstream `auth_time` with the value of `max_age`.
 - A replayed authorization code revokes the code and its request, but nothing already issued: an
   access token for `/userinfo` keeps its five minutes.
 
 ## Keys
 
 `IDENTITY_BROKER_KEYS` holds one current RS256 private key, the public halves of retired keys with
-their retirement time, and the salt. `keys --rotate` keeps the retired public key in the JWKS for 14
-days. After a key compromise, `keys --rotate --no-overlap` drops the retired keys at once, so every
-token signed before stops verifying; the salt is kept.
+their retirement time, and the salt. The host parses it in each request and refuses a salt shorter
+than 16 bytes or a key without its RSA members. The JWKS publishes each key under its entry's kid,
+the kid the signer writes into a token header. `keys --rotate` only parses its input, so a current
+key the signer refuses, such as RSA under the 2048 bits RS256 needs, can still be rotated out. It
+checks its output instead: a test id_token signed with the new current key must verify against the
+JWKS the broker publishes, and each retired key there must be RSA of 2048 bits or more; a weak key
+carried over as retired is dropped with `--no-overlap`. `keys --rotate` keeps the retired public key
+in the JWKS for 14 days. After a key compromise, `keys --rotate --no-overlap` drops the retired keys
+at once, so every token signed before stops verifying; the salt is kept.

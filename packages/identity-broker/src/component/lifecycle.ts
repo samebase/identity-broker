@@ -3,7 +3,7 @@ import { internal } from "./_generated/api";
 import { internalMutation, mutation, type MutationCtx } from "./_generated/server";
 import { EMAIL_SEND_WINDOW_MS } from "./authRequests";
 
-const { number, object } = v;
+const { number, object, optional } = v;
 
 /** How many documents one batch deletes per table, so a batch stays well inside one transaction. */
 const BATCH = 200;
@@ -12,7 +12,8 @@ const MAX_CONTINUATIONS = 50;
 
 const vCleanupArgs = object({
   now: number(),
-  previewClientMaxAgeMs: number(),
+  /** Absent: preview clients are never deleted. */
+  previewClientMaxAgeMs: optional(number()),
   signInRetentionMs: number(),
 });
 
@@ -58,15 +59,21 @@ async function cleanupBatch(
     await ctx.db.delete("registrationTokens", token._id);
   }
 
-  const previewCutoff = args.now - args.previewClientMaxAgeMs;
-  const previewClients = (
-    await ctx.db
-      .query("clients")
-      .withIndex("by_deployment_type", (q) => q.eq("deploymentType", "preview"))
-      .collect()
-  )
-    .filter((client) => (client.lastSignInAt ?? client.createdAt) < previewCutoff)
-    .slice(0, BATCH);
+  const { previewClientMaxAgeMs } = args;
+  const previewClients =
+    previewClientMaxAgeMs === undefined
+      ? []
+      : (
+          await ctx.db
+            .query("clients")
+            .withIndex("by_deployment_type", (q) => q.eq("deploymentType", "preview"))
+            .collect()
+        )
+          .filter(
+            (client) =>
+              (client.lastSignInAt ?? client.createdAt) < args.now - previewClientMaxAgeMs,
+          )
+          .slice(0, BATCH);
   for (const client of previewClients) {
     await ctx.db.delete("clients", client._id);
   }
@@ -98,7 +105,7 @@ async function cleanupBatch(
   if (continuation < MAX_CONTINUATIONS && Object.values(counts).some((count) => count === BATCH)) {
     await ctx.scheduler.runAfter(0, internal.lifecycle.continueCleanup, {
       now: args.now,
-      previewClientMaxAgeMs: args.previewClientMaxAgeMs,
+      ...(previewClientMaxAgeMs === undefined ? {} : { previewClientMaxAgeMs }),
       signInRetentionMs: args.signInRetentionMs,
       continuation: continuation + 1,
     });
@@ -108,9 +115,9 @@ async function cleanupBatch(
 
 /**
  * Deletes what has run out: expired requests, codes and registration tokens, preview clients
- * nobody used for `previewClientMaxAgeMs`, audit rows older than `signInRetentionMs`, and email send
- * rows outside the send window. The host schedules this daily from a cron; production and
- * development clients are never touched. The counts are this call's batch: a full batch schedules
+ * nobody used for `previewClientMaxAgeMs` when the host passes it, audit rows older than
+ * `signInRetentionMs`, and email send rows outside the send window. The host schedules this daily
+ * from a cron; production and development clients are never touched. The counts are this call's batch: a full batch schedules
  * the next one, so one call drains the backlog.
  */
 export const cleanup = mutation({
@@ -128,7 +135,9 @@ export const continueCleanup = internalMutation({
       ctx,
       {
         now: args.now,
-        previewClientMaxAgeMs: args.previewClientMaxAgeMs,
+        ...(args.previewClientMaxAgeMs === undefined
+          ? {}
+          : { previewClientMaxAgeMs: args.previewClientMaxAgeMs }),
         signInRetentionMs: args.signInRetentionMs,
       },
       args.continuation,
