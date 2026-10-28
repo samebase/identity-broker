@@ -168,6 +168,13 @@ describe("token", () => {
         new URLSearchParams({ client_id: "a", client_secret: "b" }),
       ),
     ).toMatchObject({ ok: false, status: 400, error: "invalid_request" });
+    // RFC 6749 section 3.2: a parameter without a value is omitted, so this is Basic alone.
+    expect(
+      readClientAuthentication(`Basic ${btoa("a:b")}`, new URLSearchParams("client_secret=")),
+    ).toEqual({
+      ok: true,
+      value: { clientId: "a", clientSecret: "b", method: "client_secret_basic" },
+    });
     expect(
       readClientAuthentication(
         null,

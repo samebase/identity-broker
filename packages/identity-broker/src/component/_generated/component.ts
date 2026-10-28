@@ -169,15 +169,18 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         "internal",
         {
           clientId: string;
+          clientSecretHash: string;
           codeHash: string;
           codeVerifier: string;
           now: number;
           redirectUri?: string;
+          tokenEndpointAuthMethod: "client_secret_post" | "client_secret_basic";
         },
         | {
             appId: string;
             authTime: number;
             clientId: string;
+            firstParty: boolean;
             identity: {
               connector: string;
               email?: string;
@@ -190,7 +193,11 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
             ok: true;
             scope: string;
           }
-        | { description: string; ok: false },
+        | {
+            description: string;
+            error: "invalid_client" | "invalid_grant";
+            ok: false;
+          },
         Name
       >;
       get: FunctionReference<

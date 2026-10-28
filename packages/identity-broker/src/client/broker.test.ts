@@ -95,6 +95,7 @@ describe("metadata", () => {
       expect(metadata.subject_types_supported).toEqual(["pairwise"]);
       expect(metadata.code_challenge_methods_supported).toEqual(["S256"]);
       expect(metadata.authorization_response_iss_parameter_supported).toBe(true);
+      expect(metadata.claims_supported).toContain("connector_account_id");
     }
     const jwks = await (await h.fetchBroker(`${ISSUER}/.well-known/jwks.json`)).json();
     expect(jwks.keys).toHaveLength(1);
@@ -379,13 +380,14 @@ describe("authorization code flow with an OAuth connector", () => {
     expect(claims["email_verified"]).toBe(true);
     expect(claims["connector"]).toBe("fake");
     expect(typeof claims.auth_time).toBe("number");
-    expect(claims).not.toHaveProperty("connector_account_id");
+    // The fake GitHub user's id, the same in every app.
+    expect(claims["connector_account_id"]).toBe("42");
 
     const userinfo = await h.fetchBroker(`${ISSUER}/userinfo`, {
       headers: { Authorization: `Bearer ${body.access_token}` },
     });
     expect(userinfo.status).toBe(200);
-    expect((await userinfo.json()).sub).toBe(claims.sub);
+    expect(await userinfo.json()).toMatchObject({ sub: claims.sub, connector_account_id: "42" });
 
     const signIns = await h.t.run(async (ctx) => await ctx.db.query("signIns").collect());
     expect(signIns).toHaveLength(1);
@@ -415,6 +417,8 @@ describe("authorization code flow with an OAuth connector", () => {
         verifier: otherPkce.verifier,
       })
     ).json();
+    // The pairwise sub differs; the connector's account id is the same in both first-party apps.
+    expect(decodeJwt(otherTokens.id_token)).toMatchObject({ connector_account_id: "42" });
     expect(decodeJwt(otherTokens.id_token).sub).not.toBe(claims.sub);
   });
 
@@ -686,6 +690,8 @@ describe("authorization code flow with an OAuth connector", () => {
       const idToken = decodeJwt((await tokens.json()).id_token);
       // The callback's time, never the upstream's hour-old value.
       expect(idToken.auth_time).toBeGreaterThanOrEqual(signIn.createdSecond);
+      // The upstream id_token's `sub`.
+      expect(idToken["connector_account_id"]).toBe("24400320");
     }
   });
 
@@ -784,41 +790,72 @@ describe("authorization code flow with an OAuth connector", () => {
     ).toEqual({ error: "server_error", description: "Fake sign-in failed." });
   });
 
-  test("a failed Basic authentication answers 401 with a Basic challenge", async () => {
+  test("a client authenticates by the method it registered, and by one method only", async () => {
     const h = await createHarness({ connectors: [fakeUpstream().connector] });
-    const { clientId, clientSecret } = await h.registerClient({
+    const posting = await h.registerClient({
       appName: "Bristol",
       firstParty: true,
       redirectUri: REDIRECT_URI,
     });
-    const { verifier } = await pkce();
-    const body = new URLSearchParams({
-      grant_type: "authorization_code",
-      code: "c",
-      code_verifier: verifier,
-    }).toString();
-    const post = (headers: Record<string, string>, form = body) =>
+    // Registered without token_endpoint_auth_method: client_secret_basic (RFC 7591 section 2).
+    const basicClient = await (
+      await h.fetchBroker(`${ISSUER}/register`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${posting.token}`, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          redirect_uris: [REDIRECT_URI],
+          client_name: "Bristol preview",
+          deployment_type: "preview",
+        }),
+      })
+    ).json();
+    const clientId = String(basicClient.client_id);
+    const clientSecret = String(basicClient.client_secret);
+    const basic = (id: string, secret: string) => `Basic ${btoa(`${id}:${secret}`)}`;
+    const { verifier, challenge } = await pkce();
+    const back = await completeUpstream(
+      h,
+      await h.fetchBroker(authorizeUrl(h, { clientId, challenge })),
+    );
+    const code = new URL(back.headers.get("location") ?? "").searchParams.get("code") ?? "";
+    const redeem = (headers: Record<string, string>, credentials: Record<string, string>) =>
       h.fetchBroker(`${ISSUER}/token`, {
         method: "POST",
         headers: { "Content-Type": "application/x-www-form-urlencoded", ...headers },
-        body: form,
+        body: new URLSearchParams({
+          grant_type: "authorization_code",
+          code,
+          code_verifier: verifier,
+          ...credentials,
+        }).toString(),
       });
+
+    // RFC 6749 section 2.3.1: one method per request. The right Basic header with the right body
+    // credentials is refused, though the header alone succeeds below.
+    const both = await redeem(
+      { Authorization: basic(clientId, clientSecret) },
+      { client_id: clientId, client_secret: clientSecret },
+    );
+    expect(both.status).toBe(400);
+    expect((await both.json()).error).toBe("invalid_request");
+    // A wrong or malformed header, or the header of a client registered for the body, is a 401
+    // with a Basic challenge.
     for (const authorization of [
-      // The client registered for client_secret_post.
-      `Basic ${btoa(`${clientId}:${clientSecret}`)}`,
+      basic(clientId, "wrong"),
       `Basic ${btoa("a:%E0%A4%A")}`,
+      basic(posting.clientId, posting.clientSecret),
     ]) {
-      const response = await post({ Authorization: authorization });
+      const response = await redeem({ Authorization: authorization }, {});
       expect(response.status).toBe(401);
       expect(response.headers.get("www-authenticate")).toBe('Basic realm="token"');
       expect((await response.json()).error).toBe("invalid_client");
     }
-    const inBody = await post(
-      {},
-      `${body}&${new URLSearchParams({ client_id: clientId, client_secret: "wrong" })}`,
-    );
+    // The Basic client's credentials in the body are not its method: a 401 without a challenge.
+    const inBody = await redeem({}, { client_id: clientId, client_secret: clientSecret });
     expect(inBody.status).toBe(401);
     expect(inBody.headers.get("www-authenticate")).toBeNull();
+    // None of the refusals consumed the code; the registered method alone redeems it.
+    expect((await redeem({ Authorization: basic(clientId, clientSecret) }, {})).status).toBe(200);
   });
 
   test("claims and the granted scope follow the requested scopes", async () => {
@@ -852,6 +889,8 @@ describe("authorization code flow with an OAuth connector", () => {
             ["email", "email_verified", "name", "picture"].includes(name),
           ),
         ).toEqual(claimed);
+        // Not a scoped claim: present with `openid` alone.
+        expect(claims["connector_account_id"]).toBe("42");
       }
     }
   });
@@ -1076,9 +1115,11 @@ describe("email connector", () => {
     expect(claims["email"]).toBe("nicu@example.com");
     expect(claims["email_verified"]).toBe(true);
     expect(claims["connector"]).toBe("email");
+    // The email connector's account id is the canonical address.
+    expect(claims["connector_account_id"]).toBe("nicu@example.com");
   });
 
-  test("a chooser request's email steps need the cookie, even with the right code", async () => {
+  test("a chooser request's email steps need the cookie; a third-party app gets no account id", async () => {
     const codes: string[] = [];
     const h = await createHarness({
       // @ts-expect-error a stand-in function reference; the harness replaces ctx.runAction.
@@ -1095,13 +1136,15 @@ describe("email connector", () => {
         return null;
       },
     });
-    const { clientId } = await h.registerClient({
+    const { clientId, clientSecret } = await h.registerClient({
       appName: "Stranger",
       firstParty: false,
       redirectUri: REDIRECT_URI,
     });
-    const { challenge } = await pkce();
-    const page = await h.fetchBroker(authorizeUrl(h, { clientId, challenge }));
+    const { verifier, challenge } = await pkce();
+    const page = await h.fetchBroker(
+      authorizeUrl(h, { clientId, challenge, extra: { scope: "openid" } }),
+    );
     const cookie = (page.headers.get("set-cookie") ?? "").split(";")[0] ?? "";
     const choose = (await page.text()).match(/href="([^"]*connector=email)"/)?.[1] ?? "";
     const chooseUrl = `${ISSUER}${choose.replace(/&amp;/g, "&")}`;
@@ -1133,6 +1176,21 @@ describe("email connector", () => {
     expect(ok.headers.get("set-cookie")).toBe(
       `__Host-broker_txn_${requestId}=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0`,
     );
+
+    // The consent promised a stable id: the pairwise sub, without the account id, which for the
+    // email connector is the address.
+    const code = new URL(ok.headers.get("location") ?? "").searchParams.get("code") ?? "";
+    const tokens = await (await exchange(h, { code, clientId, clientSecret, verifier })).json();
+    const userinfo = await (
+      await h.fetchBroker(`${ISSUER}/userinfo`, {
+        headers: { Authorization: `Bearer ${tokens.access_token}` },
+      })
+    ).json();
+    for (const claims of [decodeJwt(tokens.id_token), userinfo]) {
+      expect(claims).toMatchObject({ connector: "email" });
+      expect(Object.keys(claims)).not.toContain("connector_account_id");
+      expect(Object.keys(claims)).not.toContain("email");
+    }
   });
 
   test("the fifth miss locks the request", async () => {
