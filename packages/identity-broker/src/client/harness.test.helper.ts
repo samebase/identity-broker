@@ -1,11 +1,12 @@
 /// <reference types="vite-plus/client" />
 import { convexTest } from "convex-test";
 import { anyApi, httpRouter, ROUTABLE_HTTP_METHODS } from "convex/server";
+import { exportJWK, generateKeyPair, SignJWT } from "jose";
 import { vi } from "vite-plus/test";
 import type { ComponentApi } from "../component/_generated/component.js";
 import { api } from "../component/_generated/api.js";
 import schema from "../component/schema.js";
-import type { Connector } from "./connectors/types.js";
+import type { Connector, OidcConnector } from "./connectors/types.js";
 import { defineIdentityBroker } from "./index.js";
 import { createKeySet, type KeySet } from "./keys.js";
 
@@ -205,4 +206,79 @@ export function fakeUpstream(options: { userId?: string } = {}) {
     },
   };
   return { connector, calls, fetchStub };
+}
+
+/**
+ * A fake OpenID provider behind the global fetch: discovery, JWKS, and a token endpoint that signs
+ * an id_token. Its issuer, client, subject and `acr` come from the example ID Token of OpenID
+ * Connect Core 1.0 section 2; `nextIdToken` sets the nonce and the `auth_time` of the next one
+ * (`undefined`: the claim is left out). The connector documents `prompt=login`.
+ */
+export async function fakeOidcUpstream() {
+  const issuer = "https://server.example.com";
+  const { privateKey, publicKey } = await generateKeyPair("RS256");
+  const jwk = { ...(await exportJWK(publicKey)), kid: "k1", alg: "RS256", use: "sig" };
+  let next: { nonce: string; authTime: number | undefined } | undefined;
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const request = new Request(input, init);
+      const url = new URL(request.url);
+      if (url.href === `${issuer}/.well-known/openid-configuration`) {
+        return Response.json({
+          issuer,
+          authorization_endpoint: `${issuer}/authorize`,
+          token_endpoint: `${issuer}/token`,
+          jwks_uri: `${issuer}/jwks`,
+          response_types_supported: ["code"],
+          subject_types_supported: ["public"],
+          id_token_signing_alg_values_supported: ["RS256"],
+          code_challenge_methods_supported: ["S256"],
+        });
+      }
+      if (url.href === `${issuer}/jwks`) {
+        return Response.json({ keys: [jwk] });
+      }
+      if (url.href === `${issuer}/token` && request.method === "POST" && next !== undefined) {
+        const body = new URLSearchParams(await request.text());
+        if (body.get("code") !== "upstream-code" || body.get("client_secret") !== "idp-secret") {
+          return Response.json({ error: "invalid_grant" }, { status: 400 });
+        }
+        const idToken = await new SignJWT({
+          nonce: next.nonce,
+          ...(next.authTime === undefined ? {} : { auth_time: next.authTime }),
+          acr: "urn:mace:incommon:iap:silver",
+        })
+          .setProtectedHeader({ alg: "RS256", kid: "k1" })
+          .setIssuer(issuer)
+          .setSubject("24400320")
+          .setAudience("s6BhdRkqt3")
+          .setIssuedAt()
+          .setExpirationTime("5m")
+          .sign(privateKey);
+        return Response.json({
+          access_token: "idp-access",
+          token_type: "Bearer",
+          id_token: idToken,
+        });
+      }
+      return new Response(`unexpected ${request.method} ${url.href}`, { status: 599 });
+    }),
+  );
+  const connector: OidcConnector = {
+    kind: "oidc",
+    name: "idp",
+    label: "IdP",
+    issuer,
+    scopes: ["openid"],
+    promptLogin: true,
+    clientId: () => "s6BhdRkqt3",
+    clientSecret: () => "idp-secret",
+  };
+  return {
+    connector,
+    nextIdToken: (value: { nonce: string; authTime: number | undefined }) => {
+      next = value;
+    },
+  };
 }

@@ -64,6 +64,15 @@ export async function startUpstream(args: {
   return { url: url.toString(), state, codeVerifier, nonce };
 }
 
+export type UpstreamFinish = {
+  identity: UpstreamIdentity;
+  /**
+   * The id_token's `auth_time`, in seconds: when the provider last authenticated the user. A plain
+   * OAuth connector has no id_token and an OIDC provider may omit the claim, so it can be absent.
+   */
+  authTimeSeconds: number | undefined;
+};
+
 /**
  * The connector callback: validate the response, exchange the code, and read the identity. Errors
  * propagate; the caller turns them into a redirect back to the client.
@@ -75,7 +84,7 @@ export async function finishUpstream(args: {
   state: string;
   codeVerifier: string;
   nonce: string | undefined;
-}): Promise<UpstreamIdentity> {
+}): Promise<UpstreamFinish> {
   const as = await authorizationServer(args.connector);
   const client: oauth.Client = { client_id: args.connector.clientId() };
   const clientAuth = oauth.ClientSecretPost(args.connector.clientSecret());
@@ -90,7 +99,10 @@ export async function finishUpstream(args: {
   );
   if (args.connector.kind === "oauth") {
     const tokens = await oauth.processAuthorizationCodeResponse(as, client, response);
-    return await args.connector.identity(tokens.access_token);
+    return {
+      identity: await args.connector.identity(tokens.access_token),
+      authTimeSeconds: undefined,
+    };
   }
   const tokens = await oauth.processAuthorizationCodeResponse(as, client, response, {
     requireIdToken: true,
@@ -113,5 +125,6 @@ export async function finishUpstream(args: {
   if (typeof claims["picture"] === "string") {
     identity.picture = claims["picture"];
   }
-  return identity;
+  // oauth4webapi rejects an id_token whose `auth_time` is present and not a non-negative number.
+  return { identity, authTimeSeconds: claims.auth_time };
 }

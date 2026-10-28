@@ -16,7 +16,7 @@ afterEach(() => {
  * The fake provider signs the nonce the test hands it after `startUpstream`, the way a real
  * provider echoes the nonce of the authorization request it saw.
  */
-async function fakeProvider(options: { subject?: string } = {}) {
+async function fakeProvider(options: { subject?: string; authTime?: number } = {}) {
   const { privateKey, publicKey } = await generateKeyPair("RS256");
   const jwk = { ...(await exportJWK(publicKey)), kid: "k1", alg: "RS256", use: "sig" };
   let tokenRequests = 0;
@@ -54,6 +54,7 @@ async function fakeProvider(options: { subject?: string } = {}) {
         }
         const idToken = await new SignJWT({
           ...(nonce === undefined ? {} : { nonce }),
+          ...(options.authTime === undefined ? {} : { auth_time: options.authTime }),
           email: "ada@example.com",
           email_verified: true,
           name: "Ada",
@@ -90,7 +91,8 @@ const connector: OidcConnector = {
 };
 
 test("start carries PKCE and nonce; finish validates the signed id_token and reads the claims", async () => {
-  const provider = await fakeProvider();
+  const authTime = Math.floor(Date.now() / 1000) - 5;
+  const provider = await fakeProvider({ authTime });
   const start = await startUpstream({ connector, callbackUrl: CALLBACK, freshLogin: true });
   const url = new URL(start.url);
   expect(url.origin + url.pathname).toBe(`${ISSUER}/authorize`);
@@ -100,7 +102,7 @@ test("start carries PKCE and nonce; finish validates the signed id_token and rea
 
   provider.setNonce(start.nonce);
   const current = new URL(`${CALLBACK}?code=idp-code&state=${encodeURIComponent(start.state)}`);
-  const identity = await finishUpstream({
+  const finish = await finishUpstream({
     connector,
     callbackUrl: CALLBACK,
     currentUrl: current,
@@ -108,12 +110,31 @@ test("start carries PKCE and nonce; finish validates the signed id_token and rea
     codeVerifier: start.codeVerifier,
     nonce: start.nonce,
   });
-  expect(identity).toEqual({
-    upstreamId: "idp-sub-1",
-    email: "ada@example.com",
-    emailVerified: true,
-    name: "Ada",
+  expect(finish).toEqual({
+    identity: {
+      upstreamId: "idp-sub-1",
+      email: "ada@example.com",
+      emailVerified: true,
+      name: "Ada",
+    },
+    authTimeSeconds: authTime,
   });
+});
+
+test("an id_token without auth_time finishes with no authentication time", async () => {
+  const provider = await fakeProvider();
+  const start = await startUpstream({ connector, callbackUrl: CALLBACK, freshLogin: false });
+  expect(new URL(start.url).searchParams.get("prompt")).toBeNull();
+  provider.setNonce(start.nonce);
+  const finish = await finishUpstream({
+    connector,
+    callbackUrl: CALLBACK,
+    currentUrl: new URL(`${CALLBACK}?code=idp-code&state=${encodeURIComponent(start.state)}`),
+    state: start.state,
+    codeVerifier: start.codeVerifier,
+    nonce: start.nonce,
+  });
+  expect(finish.authTimeSeconds).toBeUndefined();
 });
 
 test("a wrong nonce or a wrong state is refused", async () => {

@@ -15,9 +15,8 @@ import type {
   EmailConnector,
   OauthConnector,
   OidcConnector,
-  UpstreamIdentity,
 } from "./connectors/types.js";
-import { finishUpstream, startUpstream } from "./connectors/upstream.js";
+import { finishUpstream, startUpstream, type UpstreamFinish } from "./connectors/upstream.js";
 import { chooserPage, emailAddressPage, emailCodePage, errorPage } from "./html.js";
 import {
   signAccessToken,
@@ -487,9 +486,9 @@ export function defineIdentityBroker(config: IdentityBrokerConfig) {
           description: "The sign-in expired.",
         });
       }
-      let identity: UpstreamIdentity;
+      let upstream: UpstreamFinish;
       try {
-        identity = await finishUpstream({
+        upstream = await finishUpstream({
           connector,
           callbackUrl: callbackUrl(connector),
           currentUrl: url,
@@ -527,11 +526,28 @@ export function defineIdentityBroker(config: IdentityBrokerConfig) {
           description: `${connector.label} sign-in failed.`,
         });
       }
+      let authTime = now;
+      if (claim.freshLogin) {
+        // prompt=login went upstream, but a provider can still reuse its session; only the
+        // id_token's auth_time attests a login during this request. auth_time is in whole seconds,
+        // so the request's creation counts from the start of its second. A plain OAuth connector
+        // has no auth_time, and startConnector already refused it.
+        const { authTimeSeconds } = upstream;
+        if (authTimeSeconds === undefined || authTimeSeconds < Math.floor(claim.createdAt / 1000)) {
+          await ctx.runMutation(component.authRequests.abandon, { requestId: claim.requestId });
+          return authorizationError({
+            ...back,
+            error: "login_required",
+            description: `${connector.label} did not confirm a new login, which prompt=login or max_age asked for.`,
+          });
+        }
+        authTime = authTimeSeconds * 1000;
+      }
       const code = randomToken(32);
       const completed = await ctx.runMutation(component.authRequests.complete, {
         requestId: claim.requestId,
-        identity: { connector: connector.name, ...identity },
-        authTime: now,
+        identity: { connector: connector.name, ...upstream.identity },
+        authTime,
         codeHash: await sha256Hex(code),
         codeExpiresAt: now + CODE_TTL_MS,
         now,
