@@ -3,12 +3,6 @@ import { v } from "convex/values";
 
 const { array, boolean, literal, number, object, optional, string, union } = v;
 
-/** How a client authenticates at the token endpoint. Public clients are not supported yet. */
-export const vTokenEndpointAuthMethod = union(
-  literal("client_secret_post"),
-  literal("client_secret_basic"),
-);
-
 /**
  * What a connector attested about the user. `upstreamId` is the connector's own stable id for the
  * account (the GitHub user id, the OIDC `sub`). The pairwise subject is derived from it on the
@@ -76,8 +70,8 @@ export default defineSchema({
   clients: defineTable({
     clientId: string(),
     appId: string(),
+    /** SHA-256 hex of the client secret, which the client posts in the token request body. */
     secretHash: string(),
-    tokenEndpointAuthMethod: vTokenEndpointAuthMethod,
     redirectUri: string(),
   })
     .index("by_client_id", ["clientId"])

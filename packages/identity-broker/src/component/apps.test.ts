@@ -12,7 +12,6 @@ const client = (appId: string, clientId: string) => ({
   clientId,
   appId,
   secretHash: "h",
-  tokenEndpointAuthMethod: "client_secret_post" as const,
   redirectUri: "https://app.test/cb",
 });
 

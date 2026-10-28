@@ -147,7 +147,6 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
           clientId: string;
           redirectUri: string;
           secretHash: string;
-          tokenEndpointAuthMethod: "client_secret_post" | "client_secret_basic";
         },
         null,
         Name
@@ -161,7 +160,6 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
           clientId: string;
           redirectUri: string;
           secretHash: string;
-          tokenEndpointAuthMethod: "client_secret_post" | "client_secret_basic";
         } | null,
         Name
       >;
@@ -174,7 +172,6 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
           clientId: string;
           redirectUri: string;
           secretHash: string;
-          tokenEndpointAuthMethod: "client_secret_post" | "client_secret_basic";
         }>,
         Name
       >;

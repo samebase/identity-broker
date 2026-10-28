@@ -116,26 +116,31 @@ describe("metadata", () => {
 });
 
 describe("registration", () => {
-  test("a host allowed later registers", async () => {
+  test("a host allowed later registers, for client_secret_post only", async () => {
     const h = await createHarness({ connectors: [fakeUpstream().connector] });
     const { appId, token } = await h.registerClient("bristol");
-    const register = () =>
+    const register = (metadata: Record<string, string>) =>
       h.fetchBroker(`${ISSUER}/register`, {
         method: "POST",
         headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
         body: JSON.stringify({
           redirect_uris: ["https://bristol.example/oauth/hub/callback"],
+          ...metadata,
         }),
       });
-    expect((await register()).status).toBe(400);
+    const post = { token_endpoint_auth_method: "client_secret_post" };
+    expect((await (await register(post)).json()).error).toBe("invalid_redirect_uri");
     await h.t.mutation(api.apps.setAllowedCallbackHosts, {
       appId,
       allowedCallbackHosts: ["bristol.example"],
     });
-    const registered = await register();
+    const registered = await register(post);
     expect(registered.status).toBe(201);
-    // RFC 7591 section 2: without token_endpoint_auth_method, the client uses Basic.
-    expect((await registered.json()).token_endpoint_auth_method).toBe("client_secret_basic");
+    expect((await registered.json()).token_endpoint_auth_method).toBe("client_secret_post");
+    // The RFC 7591 default, client_secret_basic, is refused rather than assumed.
+    for (const metadata of [{}, { token_endpoint_auth_method: "client_secret_basic" }]) {
+      expect((await (await register(metadata)).json()).error).toBe("invalid_client_metadata");
+    }
   });
 
   test("tokens are listed as hashes and can be revoked; a client can be deleted", async () => {
@@ -168,6 +173,7 @@ describe("registration", () => {
       headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
       body: JSON.stringify({
         redirect_uris: ["https://evil.example/cb"],
+        token_endpoint_auth_method: "client_secret_post",
       }),
     });
     expect(badHost.status).toBe(400);
@@ -481,39 +487,6 @@ describe("authorization code flow with an OAuth connector", () => {
     expect(
       await callback({ error: "invalid_scope", error_description: "Upstream detail" }),
     ).toEqual({ error: "server_error", description: "Fake sign-in failed." });
-  });
-
-  test("a failed Basic authentication answers 401 with a Basic challenge", async () => {
-    const h = await createHarness({ connectors: [fakeUpstream().connector] });
-    const { clientId, clientSecret } = await h.registerClient("bristol");
-    const { verifier } = await pkce();
-    const body = new URLSearchParams({
-      grant_type: "authorization_code",
-      code: "c",
-      code_verifier: verifier,
-    }).toString();
-    const post = (headers: Record<string, string>, form = body) =>
-      h.fetchBroker(`${ISSUER}/token`, {
-        method: "POST",
-        headers: { "Content-Type": "application/x-www-form-urlencoded", ...headers },
-        body: form,
-      });
-    for (const authorization of [
-      // The client registered for client_secret_post.
-      `Basic ${btoa(`${clientId}:${clientSecret}`)}`,
-      `Basic ${btoa("a:%E0%A4%A")}`,
-    ]) {
-      const response = await post({ Authorization: authorization });
-      expect(response.status).toBe(401);
-      expect(response.headers.get("www-authenticate")).toBe('Basic realm="token"');
-      expect((await response.json()).error).toBe("invalid_client");
-    }
-    const inBody = await post(
-      {},
-      `${body}&${new URLSearchParams({ client_id: clientId, client_secret: "wrong" })}`,
-    );
-    expect(inBody.status).toBe(401);
-    expect(inBody.headers.get("www-authenticate")).toBeNull();
   });
 
   test("claims and the granted scope follow the requested scopes", async () => {

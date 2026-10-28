@@ -1,6 +1,5 @@
 import { v } from "convex/values";
 import { mutation, query } from "./_generated/server";
-import { vTokenEndpointAuthMethod } from "./schema";
 
 const { array, boolean, object, string } = v;
 
@@ -8,7 +7,6 @@ const vClient = object({
   clientId: string(),
   appId: string(),
   secretHash: string(),
-  tokenEndpointAuthMethod: vTokenEndpointAuthMethod,
   redirectUri: string(),
 });
 
@@ -18,7 +16,6 @@ export const create = mutation({
     clientId: string(),
     appId: string(),
     secretHash: string(),
-    tokenEndpointAuthMethod: vTokenEndpointAuthMethod,
     redirectUri: string(),
   },
   returns: v.null(),
@@ -43,7 +40,6 @@ export const create = mutation({
       clientId: args.clientId,
       appId: args.appId,
       secretHash: args.secretHash,
-      tokenEndpointAuthMethod: args.tokenEndpointAuthMethod,
       redirectUri: args.redirectUri,
     });
     return null;

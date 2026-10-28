@@ -90,7 +90,6 @@ export async function createHarness(options: {
       headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
       body: JSON.stringify({
         redirect_uris: [REDIRECT_URI],
-        // As @samebase/alchemy-identity-hub registers: Convex Auth posts the client credentials.
         token_endpoint_auth_method: "client_secret_post",
       }),
     });

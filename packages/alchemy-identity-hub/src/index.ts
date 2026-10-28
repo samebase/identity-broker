@@ -193,8 +193,8 @@ const register = (issuer: string, token: string, props: ClientProps) =>
           },
           body: JSON.stringify({
             redirect_uris: [props.redirectUri],
-            // Convex Auth's generic OAuth method posts the client credentials in the body; the
-            // RFC 7591 default is client_secret_basic.
+            // The hub's only client authentication, and the one Convex Auth's generic OAuth method
+            // uses: the client credentials in the token request body.
             token_endpoint_auth_method: "client_secret_post",
           }),
           redirect: "error",

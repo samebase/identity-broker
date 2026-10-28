@@ -29,7 +29,6 @@ import { parseKeySet, publicJwks, SIGNING_ALGORITHM, type KeySet } from "./keys.
 import {
   hostAllowed,
   readBearerToken,
-  readClientAuthentication,
   validateAuthorizeRest,
   validateAuthorizeTarget,
   validateRegistration,
@@ -108,7 +107,7 @@ export function defineIdentityBroker(config: IdentityBrokerConfig) {
     grant_types_supported: ["authorization_code"],
     subject_types_supported: ["pairwise"],
     id_token_signing_alg_values_supported: [SIGNING_ALGORITHM],
-    token_endpoint_auth_methods_supported: ["client_secret_post", "client_secret_basic"],
+    token_endpoint_auth_methods_supported: ["client_secret_post"],
     code_challenge_methods_supported: ["S256"],
     claims_supported: [
       "sub",
@@ -324,7 +323,8 @@ export function defineIdentityBroker(config: IdentityBrokerConfig) {
     if (!validation.ok) {
       return oauthError(validation.status, validation.error, validation.description);
     }
-    const host = new URL(validation.value.redirectUri).hostname;
+    const redirectUri = validation.value;
+    const host = new URL(redirectUri).hostname;
     if (!hostAllowed(host, app.allowedCallbackHosts)) {
       return oauthError(
         400,
@@ -338,8 +338,7 @@ export function defineIdentityBroker(config: IdentityBrokerConfig) {
       clientId,
       appId: app.appId,
       secretHash: await sha256Hex(clientSecret),
-      tokenEndpointAuthMethod: validation.value.tokenEndpointAuthMethod,
-      redirectUri: validation.value.redirectUri,
+      redirectUri,
     });
     return json(
       {
@@ -347,9 +346,9 @@ export function defineIdentityBroker(config: IdentityBrokerConfig) {
         client_secret: clientSecret,
         client_id_issued_at: Math.floor(now / 1000),
         client_secret_expires_at: 0,
-        redirect_uris: [validation.value.redirectUri],
+        redirect_uris: [redirectUri],
         software_id: app.appId,
-        token_endpoint_auth_method: validation.value.tokenEndpointAuthMethod,
+        token_endpoint_auth_method: "client_secret_post",
         grant_types: ["authorization_code"],
         response_types: ["code"],
       },
@@ -392,33 +391,15 @@ export function defineIdentityBroker(config: IdentityBrokerConfig) {
         "The body must be application/x-www-form-urlencoded.",
       );
     }
-    const params = new URLSearchParams(await request.text());
-    const authorization = request.headers.get("authorization");
-    // RFC 6749 section 5.2: a client that authenticated with the header gets a 401 with a challenge.
-    const challenge: Record<string, string> =
-      authorization === null ? {} : { "WWW-Authenticate": 'Basic realm="token"' };
-    const clientAuth = readClientAuthentication(authorization, params);
-    if (!clientAuth.ok) {
-      return oauthError(
-        clientAuth.status,
-        clientAuth.error,
-        clientAuth.description,
-        clientAuth.status === 401 ? challenge : {},
-      );
-    }
-    const validation = validateTokenRequest(params, clientAuth.value);
+    const validation = validateTokenRequest(new URLSearchParams(await request.text()));
     if (!validation.ok) {
       return oauthError(validation.status, validation.error, validation.description);
     }
     const client = await ctx.runQuery(component.clients.get, {
-      clientId: clientAuth.value.clientId,
+      clientId: validation.value.clientId,
     });
-    if (
-      client === null ||
-      client.tokenEndpointAuthMethod !== clientAuth.value.method ||
-      client.secretHash !== (await sha256Hex(clientAuth.value.clientSecret))
-    ) {
-      return oauthError(401, "invalid_client", "Client authentication failed.", challenge);
+    if (client === null || client.secretHash !== (await sha256Hex(validation.value.clientSecret))) {
+      return oauthError(401, "invalid_client", "Client authentication failed.");
     }
     const now = Date.now();
     const exchange = await ctx.runMutation(component.authRequests.exchangeCode, {

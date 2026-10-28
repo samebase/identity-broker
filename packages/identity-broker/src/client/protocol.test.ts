@@ -2,7 +2,6 @@ import { describe, expect, test } from "vite-plus/test";
 import {
   hostAllowed,
   parseRedirectUri,
-  readClientAuthentication,
   validateAuthorizeRest,
   validateAuthorizeTarget,
   validateRegistration,
@@ -35,29 +34,23 @@ describe("redirect URIs", () => {
 describe("registration", () => {
   const good = {
     redirect_uris: ["https://happy-otter-123.convex.site/oauth/hub/callback"],
+    token_endpoint_auth_method: "client_secret_post",
   };
 
-  test("accepts one redirect URI and the extension field; Basic is the default method", () => {
-    const result = validateRegistration(good);
-    expect(result.ok).toBe(true);
-    if (result.ok) {
-      expect(result.value.tokenEndpointAuthMethod).toBe("client_secret_basic");
-    }
-    const post = validateRegistration({
-      ...good,
-      token_endpoint_auth_method: "client_secret_post",
-    });
-    expect(post.ok && post.value.tokenEndpointAuthMethod).toBe("client_secret_post");
+  test("accepts one redirect URI with client_secret_post", () => {
+    expect(validateRegistration(good)).toEqual({ ok: true, value: good.redirect_uris[0] });
   });
 
-  test("rejects two redirect URIs, bad types, other grants", () => {
+  test("rejects two redirect URIs, other grants, another or no authentication method", () => {
     const two = validateRegistration({
       ...good,
       redirect_uris: [good.redirect_uris[0], "https://b/c"],
     });
     expect(two.ok).toBe(false);
     expect(validateRegistration({ ...good, grant_types: ["refresh_token"] }).ok).toBe(false);
-    expect(validateRegistration({ ...good, token_endpoint_auth_method: "none" }).ok).toBe(false);
+    for (const method of ["none", "client_secret_basic", undefined]) {
+      expect(validateRegistration({ ...good, token_endpoint_auth_method: method }).ok).toBe(false);
+    }
     expect(validateRegistration("nope").ok).toBe(false);
   });
 });
@@ -128,54 +121,41 @@ describe("authorize", () => {
 });
 
 describe("token", () => {
-  test("client credentials from the body or Basic", () => {
-    const post = readClientAuthentication(
-      null,
-      new URLSearchParams({ client_id: "a", client_secret: "b" }),
-    );
-    expect(post.ok && post.value.method).toBe("client_secret_post");
-    const basic = readClientAuthentication(`Basic ${btoa("a:b%3Ac")}`, new URLSearchParams());
-    expect(basic.ok && basic.value.clientSecret).toBe("b:c");
-    expect(readClientAuthentication("Bearer x", new URLSearchParams()).ok).toBe(false);
-    expect(readClientAuthentication(null, new URLSearchParams({ client_id: "a" })).ok).toBe(false);
-  });
+  const verifier = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
+  const good = {
+    client_id: "a",
+    client_secret: "b",
+    grant_type: "authorization_code",
+    code: "c",
+    code_verifier: verifier,
+  };
 
-  test("one method, no repeated parameter, and a malformed Basic header is invalid_client", () => {
+  test("credentials in the body, authorization_code only, with a verifier", () => {
+    expect(validateTokenRequest(new URLSearchParams(good))).toEqual({
+      ok: true,
+      value: {
+        clientId: "a",
+        clientSecret: "b",
+        code: "c",
+        redirectUri: undefined,
+        codeVerifier: verifier,
+      },
+    });
+    // A client that sends its credentials only in an Authorization header has none in the body.
+    const { client_secret: _secret, ...noSecret } = good;
+    expect(validateTokenRequest(new URLSearchParams(noSecret))).toMatchObject({
+      ok: false,
+      status: 401,
+      error: "invalid_client",
+    });
     expect(
-      readClientAuthentication(
-        `Basic ${btoa("a:b")}`,
-        new URLSearchParams({ client_id: "a", client_secret: "b" }),
-      ),
+      validateTokenRequest(new URLSearchParams({ ...good, grant_type: "refresh_token" })),
+    ).toMatchObject({ ok: false, error: "unsupported_grant_type" });
+    expect(
+      validateTokenRequest(new URLSearchParams({ ...good, code_verifier: "short" })),
+    ).toMatchObject({ ok: false, error: "invalid_request" });
+    expect(
+      validateTokenRequest(new URLSearchParams(`${new URLSearchParams(good)}&code=2`)),
     ).toMatchObject({ ok: false, status: 400, error: "invalid_request" });
-    expect(
-      readClientAuthentication(
-        null,
-        new URLSearchParams("client_id=a&client_secret=b&code=1&code=2"),
-      ),
-    ).toMatchObject({ ok: false, status: 400, error: "invalid_request" });
-    expect(
-      readClientAuthentication(`Basic ${btoa("a:%E0%A4%A")}`, new URLSearchParams()),
-    ).toMatchObject({ ok: false, status: 401, error: "invalid_client" });
-  });
-
-  test("authorization_code only, with a verifier", () => {
-    const client = { clientId: "a", clientSecret: "b", method: "client_secret_post" as const };
-    const verifier = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
-    const ok = validateTokenRequest(
-      new URLSearchParams({ grant_type: "authorization_code", code: "c", code_verifier: verifier }),
-      client,
-    );
-    expect(ok.ok).toBe(true);
-    const refresh = validateTokenRequest(
-      new URLSearchParams({ grant_type: "refresh_token", refresh_token: "r" }),
-      client,
-    );
-    expect(refresh.ok).toBe(false);
-    if (!refresh.ok) expect(refresh.error).toBe("unsupported_grant_type");
-    const short = validateTokenRequest(
-      new URLSearchParams({ grant_type: "authorization_code", code: "c", code_verifier: "short" }),
-      client,
-    );
-    expect(short.ok).toBe(false);
   });
 });

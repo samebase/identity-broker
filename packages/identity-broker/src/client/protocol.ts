@@ -11,9 +11,6 @@ const MAX_STATE_LENGTH = 4096;
 const MAX_REDIRECT_URI_LENGTH = 2048;
 const pkceValuePattern = /^[A-Za-z0-9\-._~]{43,128}$/;
 
-export const TOKEN_ENDPOINT_AUTH_METHODS = ["client_secret_post", "client_secret_basic"] as const;
-export type TokenEndpointAuthMethod = (typeof TOKEN_ENDPOINT_AUTH_METHODS)[number];
-
 /** The own enumerable entries of a JSON value, or an empty record for anything but an object. */
 export function asRecord(value: unknown): Record<string, unknown> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
@@ -79,13 +76,12 @@ export function hostAllowed(hostname: string, allowedHosts: readonly string[]): 
   });
 }
 
-export type RegistrationInput = {
-  redirectUri: string;
-  tokenEndpointAuthMethod: TokenEndpointAuthMethod;
-};
-
-/** RFC 7591 registration metadata as this provider accepts it: one redirect URI per client. */
-export function validateRegistration(payload: unknown): Validation<RegistrationInput> {
+/**
+ * RFC 7591 registration metadata as this provider accepts it: one redirect URI per client, and
+ * `client_secret_post`, the only client authentication of the token endpoint. The value is the
+ * redirect URI.
+ */
+export function validateRegistration(payload: unknown): Validation<string> {
   if (typeof payload !== "object" || payload === null || Array.isArray(payload)) {
     return invalid(400, "invalid_client_metadata", "The request body must be a JSON object.");
   }
@@ -108,15 +104,13 @@ export function validateRegistration(payload: unknown): Validation<RegistrationI
     );
   }
 
-  // RFC 7591 section 2: the default is client_secret_basic.
-  const authMethod = TOKEN_ENDPOINT_AUTH_METHODS.find(
-    (method) => method === (record["token_endpoint_auth_method"] ?? "client_secret_basic"),
-  );
-  if (authMethod === undefined) {
+  // Required rather than defaulted: the RFC 7591 section 2 default, client_secret_basic, is not
+  // supported.
+  if (record["token_endpoint_auth_method"] !== "client_secret_post") {
     return invalid(
       400,
       "invalid_client_metadata",
-      `token_endpoint_auth_method must be one of ${TOKEN_ENDPOINT_AUTH_METHODS.join(", ")}.`,
+      'token_endpoint_auth_method must be "client_secret_post".',
     );
   }
 
@@ -139,7 +133,7 @@ export function validateRegistration(payload: unknown): Validation<RegistrationI
 
   return {
     ok: true,
-    value: { redirectUri, tokenEndpointAuthMethod: authMethod },
+    value: redirectUri,
   };
 }
 
@@ -228,71 +222,27 @@ export function validateAuthorizeRest(params: URLSearchParams): Validation<Autho
 }
 
 export type TokenInput = {
+  clientId: string;
+  clientSecret: string;
   code: string;
   redirectUri: string | undefined;
   codeVerifier: string;
-  client: { clientId: string; clientSecret: string; method: TokenEndpointAuthMethod };
 };
 
 /**
- * Client credentials from HTTP Basic (RFC 6749 section 2.3.1) or the form body. The first look at a
- * token request, so it also refuses a repeated parameter (RFC 6749 section 3.2) and a request that
- * uses both methods (section 2.3).
+ * A token request: the client credentials in the form body (`client_secret_post`, the only client
+ * authentication), then the authorization code grant. A repeated parameter is refused first (RFC
+ * 6749 section 3.2).
  */
-export function readClientAuthentication(
-  authorization: string | null,
-  params: URLSearchParams,
-): Validation<TokenInput["client"]> {
+export function validateTokenRequest(params: URLSearchParams): Validation<TokenInput> {
   if (hasRepeatedParameter(params)) {
     return invalid(400, "invalid_request", "A parameter is repeated.");
-  }
-  if (authorization !== null) {
-    if (params.has("client_secret")) {
-      return invalid(400, "invalid_request", "Use one client authentication method, not two.");
-    }
-    const match = authorization.trim().match(/^basic\s+(.+)$/i);
-    if (match === null || match[1] === undefined) {
-      return invalid(401, "invalid_client", "Only HTTP Basic client authentication is supported.");
-    }
-    let decoded: string;
-    try {
-      decoded = atob(match[1]);
-    } catch {
-      return invalid(401, "invalid_client", "The Authorization header is not valid Base64.");
-    }
-    const separator = decoded.indexOf(":");
-    if (separator <= 0) {
-      return invalid(
-        401,
-        "invalid_client",
-        "The Authorization header must hold client_id:client_secret.",
-      );
-    }
-    try {
-      return {
-        ok: true,
-        value: {
-          clientId: decodeURIComponent(decoded.slice(0, separator)),
-          clientSecret: decodeURIComponent(decoded.slice(separator + 1)),
-          method: "client_secret_basic",
-        },
-      };
-    } catch {
-      return invalid(401, "invalid_client", "The Authorization header is not valid form encoding.");
-    }
   }
   const clientId = params.get("client_id") ?? "";
   const clientSecret = params.get("client_secret") ?? "";
   if (clientId.length === 0 || clientSecret.length === 0) {
-    return invalid(401, "invalid_client", "client_id and client_secret are required.");
+    return invalid(401, "invalid_client", "client_id and client_secret are required in the body.");
   }
-  return { ok: true, value: { clientId, clientSecret, method: "client_secret_post" } };
-}
-
-export function validateTokenRequest(
-  params: URLSearchParams,
-  client: TokenInput["client"],
-): Validation<TokenInput> {
   const grantType = params.get("grant_type");
   if (grantType !== "authorization_code") {
     return invalid(400, "unsupported_grant_type", 'grant_type must be "authorization_code".');
@@ -313,7 +263,7 @@ export function validateTokenRequest(
       "code_verifier is required: 43 to 128 URL-safe characters.",
     );
   }
-  return { ok: true, value: { code, redirectUri, codeVerifier, client } };
+  return { ok: true, value: { clientId, clientSecret, code, redirectUri, codeVerifier } };
 }
 
 export function readBearerToken(authorization: string | null): string | null {
