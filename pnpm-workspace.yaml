@@ -18,9 +18,6 @@ catalog:
 overrides:
   vite: "catalog:"
   vitest: "catalog:"
-  # @effect/platform-node 4.0.4 accepts @effect/platform-node-shared ^4.0.4, but 4.0.5 imports
-  # effect/Path APIs that the effect 4.0.4 here does not have.
-  "@effect/platform-node@4.0.4>@effect/platform-node-shared": "4.0.4"
 
 peerDependencyRules:
   allowAny:
@@ -32,9 +29,14 @@ peerDependencyRules:
 minimumReleaseAge: 10080
 minimumReleaseAgeStrict: true
 minimumReleaseAgeIgnoreMissingTime: false
+# Keep release-age exceptions exact so later releases do not bypass the cooling period.
+minimumReleaseAgeExclude:
+  # Reviewed releases: the Alchemy that @samebase/alchemy-identity-hub 0.2.0 targets, the version
+  # that @samebase/alchemy-convex 0.11.0 needs, published 2026-10-24 00:43 UTC. Remove after
+  # 2026-10-31 00:44 UTC, when the 7-day cooling period is complete.
+  - "alchemy@2.0.0-beta.84"
+  - "@alchemy.run/node-utils@2.0.0-beta.84"
 blockExoticSubdeps: true
 trustPolicy: no-downgrade
 allowBuilds:
   esbuild: true
-  # alchemy brings workerd for local Workers; the tests here run no Worker.
-  workerd: false
