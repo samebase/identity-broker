@@ -74,9 +74,7 @@ export type IdentityBrokerConfig = {
   connectors: Connector[];
   /**
    * Days without a sign-in after which `cleanup` deletes a preview client. Absent: `cleanup` deletes
-   * no client, because a deployment whose client was deleted does not register again by itself. A
-   * deployment that deletes its own client when it goes away (`DELETE /register/<client_id>`, as
-   * `@samebase/alchemy-identity-hub` does on destroy) leaves nothing idle to prune.
+   * no client, because a deployment whose client was deleted does not register again by itself.
    */
   previewClientIdleDays?: number;
 };
@@ -779,11 +777,7 @@ export function defineIdentityBroker(config: IdentityBrokerConfig) {
     return errorPage("Invalid form", "Unknown step.", 400);
   });
 
-  /**
-   * The app whose registration token a `/register` request carries as a Bearer token, or the 401
-   * that answers a missing, unknown or expired token. Registering and deleting a client both pass
-   * through here, so they authenticate alike.
-   */
+  /** The app of a registration token, or its 401. */
   async function registrationApp(ctx: Ctx, request: Request, now: number) {
     const token = readBearerToken(request.headers.get("authorization"));
     if (token === null) {
@@ -923,10 +917,13 @@ export function defineIdentityBroker(config: IdentityBrokerConfig) {
     const client = await ctx.runQuery(component.clients.get, {
       clientId: clientAuth.value.clientId,
     });
+    // A client whose app is deleted is refused at once: deleteApp deletes the app row first and
+    // the app's clients in later batches.
     if (
       client === null ||
       client.tokenEndpointAuthMethod !== clientAuth.value.method ||
-      client.secretHash !== (await sha256Hex(clientAuth.value.clientSecret))
+      client.secretHash !== (await sha256Hex(clientAuth.value.clientSecret)) ||
+      (await readApp(ctx, client.appId)) === null
     ) {
       return oauthError(401, "invalid_client", "Client authentication failed.", challenge);
     }

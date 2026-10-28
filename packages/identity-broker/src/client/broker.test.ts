@@ -288,6 +288,54 @@ describe("registration", () => {
   });
 });
 
+describe("app deletion", () => {
+  test("with the app row gone, its tokens and clients are refused before their rows are", async () => {
+    const h = await createHarness({ connectors: [fakeUpstream().connector] });
+    const { appId, token, clientId, clientSecret } = await h.registerClient({
+      appName: "Bristol",
+      firstParty: true,
+      redirectUri: REDIRECT_URI,
+    });
+    const { verifier, challenge } = await pkce();
+    const back = await completeUpstream(
+      h,
+      await h.fetchBroker(authorizeUrl(h, { clientId, challenge })),
+    );
+    const code = new URL(back.headers.get("location") ?? "").searchParams.get("code") ?? "";
+    // What deleteApp leaves after its first transaction for an app with more than 200 clients: the
+    // app row is gone, and the token and the client wait for a later batch.
+    await h.t.run(async (ctx) => {
+      const app = await ctx.db
+        .query("apps")
+        .withIndex("by_app_id", (q) => q.eq("appId", appId))
+        .unique();
+      if (app !== null) await ctx.db.delete("apps", app._id);
+    });
+    expect(await h.t.query(api.clients.get, { clientId })).not.toBeNull();
+
+    const registered = await h.fetchBroker(`${ISSUER}/register`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        redirect_uris: [REDIRECT_URI],
+        client_name: "x",
+        deployment_type: "preview",
+      }),
+    });
+    expect(registered.status).toBe(401);
+
+    const authorized = await h.fetchBroker(authorizeUrl(h, { clientId, challenge }));
+    expect(authorized.status).toBe(302);
+    const location = new URL(authorized.headers.get("location") ?? "");
+    expect(location.origin + location.pathname).toBe(REDIRECT_URI);
+    expect(location.searchParams.get("error")).toBe("server_error");
+
+    const tokens = await exchange(h, { code, clientId, clientSecret, verifier });
+    expect(tokens.status).toBe(401);
+    expect((await tokens.json()).error).toBe("invalid_client");
+  });
+});
+
 describe("authorization code flow with an OAuth connector", () => {
   test("first-party app with one connector goes straight upstream and back with a code", async () => {
     const upstream = fakeUpstream();

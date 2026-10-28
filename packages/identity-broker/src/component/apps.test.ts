@@ -49,7 +49,7 @@ async function appWith(
 }
 
 describe("remove", () => {
-  test("deletes tokens and clients in batches of 200 and the app row after the last batch", async () => {
+  test("deletes the app row at once and its tokens and clients in batches of 200", async () => {
     // [clients, tokens]: none, under a batch, exactly a batch, more than two batches of each.
     for (const [clients, tokens] of [
       [0, 0],
@@ -64,18 +64,15 @@ describe("remove", () => {
       await appWith(t, { appId: "other", clients: 1, tokens: 1 });
 
       await t.mutation(api.apps.remove, { appId: "bristol" });
+      expect(await t.query(api.apps.get, { appId: "bristol" })).toBeNull();
       const clientsLeft = (await t.query(api.clients.listByApp, { appId: "bristol" })).length;
       const tokensLeft = (await t.query(api.registration.listTokens, { appId: "bristol" })).length;
       expect([clientsLeft, tokensLeft]).toEqual([
         Math.max(clients - 200, 0),
         Math.max(tokens - 200, 0),
       ]);
-      // A batch that filled a table leaves the app row for the batch it scheduled.
-      const filled = clients >= 200 || tokens >= 200;
-      expect((await t.query(api.apps.get, { appId: "bristol" })) !== null).toBe(filled);
 
       await t.finishAllScheduledFunctions(vi.runAllTimers);
-      expect(await t.query(api.apps.get, { appId: "bristol" })).toBeNull();
       expect(await t.query(api.clients.listByApp, { appId: "bristol" })).toEqual([]);
       expect(await t.query(api.registration.listTokens, { appId: "bristol" })).toEqual([]);
       expect(await t.query(api.apps.get, { appId: "other" })).not.toBeNull();

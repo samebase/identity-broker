@@ -97,19 +97,7 @@ export const setAllowedCallbackHosts = mutation({
   },
 });
 
-/**
- * Deletes one batch of an app's registration tokens and clients. A table that filled its batch may
- * hold more, so the batch schedules the next one; the batch that fills neither deletes the app row.
- * The app row goes last, so a call for an app that is still being deleted finds it and continues.
- */
-async function removeBatch(ctx: MutationCtx, appId: string): Promise<void> {
-  const app = await ctx.db
-    .query("apps")
-    .withIndex("by_app_id", (q) => q.eq("appId", appId))
-    .unique();
-  if (app === null) {
-    return;
-  }
+async function removeRows(ctx: MutationCtx, appId: string): Promise<void> {
   const tokens = await ctx.db
     .query("registrationTokens")
     .withIndex("by_app_id", (q) => q.eq("appId", appId))
@@ -126,31 +114,36 @@ async function removeBatch(ctx: MutationCtx, appId: string): Promise<void> {
   }
   if (tokens.length === BATCH || clients.length === BATCH) {
     await ctx.scheduler.runAfter(0, internal.apps.continueRemove, { appId });
-    return;
   }
-  await ctx.db.delete("apps", app._id);
 }
 
 /**
- * Deletes an app with its registration tokens and clients. This is the emergency revocation: a
- * deleted client can no longer start or finish a sign-in. The first batch deletes up to 200 tokens
- * and 200 clients at once; an app with more has the rest deleted by batches scheduled right after.
+ * Deletes an app with its registration tokens and clients. This is the emergency revocation. The
+ * app row goes first: registration, /authorize and /token refuse a token or client whose app is
+ * gone, so this transaction revokes every token and client of the app, however many batches their
+ * rows take to delete.
  */
 export const remove = mutation({
   args: { appId: string() },
   returns: v.null(),
   handler: async (ctx, args) => {
-    await removeBatch(ctx, args.appId);
+    const app = await ctx.db
+      .query("apps")
+      .withIndex("by_app_id", (q) => q.eq("appId", args.appId))
+      .unique();
+    if (app !== null) {
+      await ctx.db.delete("apps", app._id);
+    }
+    await removeRows(ctx, args.appId);
     return null;
   },
 });
 
-/** The next batch of a `remove` call that filled a batch. */
 export const continueRemove = internalMutation({
   args: { appId: string() },
   returns: v.null(),
   handler: async (ctx, args) => {
-    await removeBatch(ctx, args.appId);
+    await removeRows(ctx, args.appId);
     return null;
   },
 });

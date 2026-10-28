@@ -21,9 +21,7 @@ can still be redeemed.
 Clients stay until `DELETE /register/<client_id>` or `deleteClient` removes them, or their app is
 deleted. A host that sets `previewClientIdleDays` also has cleanup delete a preview client with no
 sign-in for that many days. It is off by default, because a deployment whose client was deleted does
-not register again by itself. A deployment that deletes its own client when it goes away, as
-`IdentityHub.Client` of `@samebase/alchemy-identity-hub` does on destroy since 0.3.0, leaves no idle
-client behind, so pruning has no reason to run for it.
+not register again by itself.
 
 ## Registration
 
@@ -35,9 +33,9 @@ learns nothing about another app's clients. The delete has the shape of RFC 7592
 does not implement: no registration access token per client, and a missing client answers 404 rather
 than 401.
 
-`deleteApp` deletes an app's registration tokens and clients in batches of 200 per table, each
-scheduling the next at once, and the app row after the last batch. An app with up to 200 clients
-loses them all in the first transaction.
+`deleteApp` deletes the app row first, then its registration tokens and clients in batches of 200
+per table, each scheduling the next at once. Registration, `/authorize` and `/token` refuse a token
+or client whose app is gone, so the first transaction revokes them all.
 
 ## Issuer
 

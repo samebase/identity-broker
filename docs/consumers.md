@@ -68,9 +68,8 @@ these requests: it registers at deploy time and deletes on destroy. `Convex.Envi
 stores the client on the deployment.
 
 The `connector` query parameter on `/authorize` (`connector=github`) skips the chooser for a
-first-party app. Each app sees its own pairwise `sub`, and `profile` above passes `email` only when
-`email_verified` is true.
+first-party app. Each app sees its own pairwise `sub`.
 
-Each app owns admission and account linking by that email. `connector=google` in the authorize URL
+Each app owns admission and account linking by email. `connector=google` in the authorize URL
 selects a connector for the chooser skip and does not enforce a Google-only policy; the app's
 admission does.

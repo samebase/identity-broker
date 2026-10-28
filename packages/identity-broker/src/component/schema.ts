@@ -9,11 +9,7 @@ export const vTokenEndpointAuthMethod = union(
   literal("client_secret_basic"),
 );
 
-/**
- * The deployment a client stands for. Any client is deleted by its app's registration token at
- * `DELETE /register/<client_id>`, or by hand; preview clients are also pruned when the host sets
- * `previewClientIdleDays`.
- */
+/** The deployment a client stands for. */
 export const vDeploymentType = union(
   literal("production"),
   literal("development"),
