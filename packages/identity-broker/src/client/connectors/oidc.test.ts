@@ -1,5 +1,6 @@
-// An OIDC connector against a fake provider: discovery, PKCE, nonce, and an id_token signed with the
-// provider's key and verified against its JWKS by oauth4webapi.
+// An OIDC connector against a fake provider: discovery, PKCE, and the state, nonce and claims of the
+// id_token, which oauth4webapi checks. It does not check the id_token's signature: the token comes
+// from the token endpoint over TLS.
 import { exportJWK, generateKeyPair, SignJWT } from "jose";
 import { afterEach, expect, test, vi } from "vite-plus/test";
 import type { OidcConnector } from "./types.js";

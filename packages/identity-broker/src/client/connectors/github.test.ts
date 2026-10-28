@@ -59,9 +59,11 @@ test("the real payloads give the id, the name, the avatar and the verified prima
   expect(seen[0]?.headers.get("user-agent")).toBe("identity-broker");
 });
 
-test("no verified address means no email claim, whatever /user says", async () => {
+test("no verified primary address means no email claim, whatever /user says", async () => {
+  // The primary address is unverified; a verified secondary one is not taken in its place.
   stubGitHub(octocat, [
     { email: "octocat@github.com", verified: false, primary: true, visibility: "public" },
+    { email: "octocat-work@github.com", verified: true, primary: false, visibility: null },
   ]);
   const identity = await connector.identity("gho_token");
   expect(identity.email).toBeUndefined();

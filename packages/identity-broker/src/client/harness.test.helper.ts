@@ -125,15 +125,14 @@ export async function pkce() {
 }
 
 /**
- * A fake plain-OAuth provider behind the global fetch: a token endpoint and a user endpoint.
- * Returns the connector pointing at it and the stub, so a test can inspect the calls.
+ * A fake plain-OAuth provider behind the global fetch, a token endpoint and a user endpoint, and the
+ * connector "fake" that points at it. Its user is 42.
  */
-export function fakeUpstream(options: { userId?: string } = {}) {
-  const calls: Request[] = [];
-  const fetchStub = vi.fn(
-    async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+export function fakeUpstream(): Connector {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
       const request = new Request(input, init);
-      calls.push(request);
       const url = new URL(request.url);
       if (
         url.origin === "https://upstream.test" &&
@@ -151,16 +150,15 @@ export function fakeUpstream(options: { userId?: string } = {}) {
           return new Response("unauthorized", { status: 401 });
         }
         return Response.json({
-          id: options.userId ?? "42",
+          id: "42",
           name: "Octo Cat",
           email: "octo@example.com",
         });
       }
       return new Response(`unexpected ${request.method} ${url.href}`, { status: 599 });
-    },
+    }),
   );
-  vi.stubGlobal("fetch", fetchStub);
-  const connector: Connector = {
+  return {
     kind: "oauth",
     name: "fake",
     label: "Fake",
@@ -182,5 +180,4 @@ export function fakeUpstream(options: { userId?: string } = {}) {
       };
     },
   };
-  return { connector, calls, fetchStub };
 }

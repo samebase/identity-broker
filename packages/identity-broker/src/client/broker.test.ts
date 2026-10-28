@@ -90,14 +90,14 @@ describe("metadata", () => {
           component,
           issuer,
           keys: () => undefined,
-          connectors: [fakeUpstream().connector],
+          connectors: [fakeUpstream()],
         }),
       ).toThrow("The issuer must be an https origin, such as https://auth.example.com");
     }
   });
 
   test("the discovery document and the JWKS", async () => {
-    const h = await createHarness({ connectors: [fakeUpstream().connector] });
+    const h = await createHarness({ connectors: [fakeUpstream()] });
     const response = await h.fetchBroker(`${ISSUER}/.well-known/openid-configuration`);
     expect(response.status).toBe(200);
     const metadata = await response.json();
@@ -115,7 +115,7 @@ describe("metadata", () => {
 
 describe("registration", () => {
   test("a host allowed later registers, for client_secret_post only", async () => {
-    const h = await createHarness({ connectors: [fakeUpstream().connector] });
+    const h = await createHarness({ connectors: [fakeUpstream()] });
     const { appId, token } = await h.registerClient("bristol");
     const register = (metadata: Record<string, string>) =>
       h.fetchBroker(`${ISSUER}/register`, {
@@ -142,7 +142,7 @@ describe("registration", () => {
   });
 
   test("tokens are listed as hashes and can be revoked; a client can be deleted", async () => {
-    const h = await createHarness({ connectors: [fakeUpstream().connector] });
+    const h = await createHarness({ connectors: [fakeUpstream()] });
     const { appId, token, clientId } = await h.registerClient("bristol");
     const tokens = await h.t.query(api.registration.listTokens, { appId });
     expect(tokens).toEqual([{ tokenHash: await sha256Hex(token), createdAt: expect.any(Number) }]);
@@ -162,7 +162,7 @@ describe("registration", () => {
   });
 
   test("needs a known token and an allowed host", async () => {
-    const h = await createHarness({ connectors: [fakeUpstream().connector] });
+    const h = await createHarness({ connectors: [fakeUpstream()] });
     const { token } = await h.registerClient("bristol");
     const noToken = await h.fetchBroker(`${ISSUER}/register`, { method: "POST", body: "{}" });
     expect(noToken.status).toBe(401);
@@ -185,7 +185,7 @@ describe("registration", () => {
   });
 
   test("DELETE /register/<client_id> deletes a client only with its app's token", async () => {
-    const h = await createHarness({ connectors: [fakeUpstream().connector] });
+    const h = await createHarness({ connectors: [fakeUpstream()] });
     const bristol = await h.registerClient("bristol");
     const other = await h.registerClient("other");
     const unregister = (clientId: string, token: string | undefined) =>
@@ -221,8 +221,7 @@ describe("registration", () => {
 
 describe("authorization code flow with an OAuth connector", () => {
   test("a sign-in goes upstream through the named connector and back with a code", async () => {
-    const upstream = fakeUpstream();
-    const h = await createHarness({ connectors: [upstream.connector] });
+    const h = await createHarness({ connectors: [fakeUpstream()] });
     const { clientId, clientSecret } = await h.registerClient("bristol");
     const { verifier, challenge } = await pkce();
 
@@ -283,8 +282,7 @@ describe("authorization code flow with an OAuth connector", () => {
   });
 
   test("a code is single use, bound to the client and the verifier; replay revokes it", async () => {
-    const upstream = fakeUpstream();
-    const h = await createHarness({ connectors: [upstream.connector] });
+    const h = await createHarness({ connectors: [fakeUpstream()] });
     const { clientId, clientSecret } = await h.registerClient("bristol");
     const other = await h.registerClient("other");
     const { verifier, challenge } = await pkce();
@@ -330,7 +328,7 @@ describe("authorization code flow with an OAuth connector", () => {
   });
 
   test("errors before the client is known are pages; after, they redirect with error and iss", async () => {
-    const h = await createHarness({ connectors: [fakeUpstream().connector] });
+    const h = await createHarness({ connectors: [fakeUpstream()] });
     const { clientId } = await h.registerClient("bristol");
     const { challenge } = await pkce();
 
@@ -401,8 +399,7 @@ describe("authorization code flow with an OAuth connector", () => {
   });
 
   test("a replayed or unknown upstream state is refused, a denied upstream goes back as access_denied", async () => {
-    const upstream = fakeUpstream();
-    const h = await createHarness({ connectors: [upstream.connector] });
+    const h = await createHarness({ connectors: [fakeUpstream()] });
     const { clientId } = await h.registerClient("bristol");
     const { challenge } = await pkce();
     const started = await h.fetchBroker(authorizeUrl(h, { clientId, challenge }));
@@ -428,9 +425,10 @@ describe("authorization code flow with an OAuth connector", () => {
   });
 
   test("a state started for one connector does not finish through another's callback", async () => {
-    const upstream = fakeUpstream();
-    const other = { ...upstream.connector, name: "other", label: "Other" };
-    const h = await createHarness({ connectors: [upstream.connector, other] });
+    const fake = fakeUpstream();
+    const h = await createHarness({
+      connectors: [fake, { ...fake, name: "other", label: "Other" }],
+    });
     const { clientId } = await h.registerClient("bristol");
     const { challenge } = await pkce();
     const started = await h.fetchBroker(
@@ -447,7 +445,7 @@ describe("authorization code flow with an OAuth connector", () => {
   });
 
   test("provider errors are logged by class name and answered with a fixed description", async () => {
-    const h = await createHarness({ connectors: [fakeUpstream().connector] });
+    const h = await createHarness({ connectors: [fakeUpstream()] });
     const { clientId } = await h.registerClient("bristol");
     const logged = vi.spyOn(console, "error").mockImplementation(() => {});
     const callback = async (params: Record<string, string>) => {
@@ -484,7 +482,7 @@ describe("authorization code flow with an OAuth connector", () => {
   });
 
   test("claims and the granted scope follow the requested scopes", async () => {
-    const h = await createHarness({ connectors: [fakeUpstream().connector] });
+    const h = await createHarness({ connectors: [fakeUpstream()] });
     const { clientId, clientSecret } = await h.registerClient("bristol");
     for (const [scope, granted, claimed] of [
       ["openid", "openid", []],
@@ -508,7 +506,7 @@ describe("authorization code flow with an OAuth connector", () => {
   });
 
   test("an error page refuses to be framed", async () => {
-    const h = await createHarness({ connectors: [fakeUpstream().connector] });
+    const h = await createHarness({ connectors: [fakeUpstream()] });
     const { challenge } = await pkce();
     for (const response of [
       await h.fetchBroker(authorizeUrl(h, { clientId: "cl_unknown", challenge })),
@@ -522,7 +520,7 @@ describe("authorization code flow with an OAuth connector", () => {
 
 describe("cleanup", () => {
   test("one call drains more expired requests than the 51 batches 0.4.0 stopped after", async () => {
-    const h = await createHarness({ connectors: [fakeUpstream().connector] });
+    const h = await createHarness({ connectors: [fakeUpstream()] });
     vi.useFakeTimers();
     const now = Date.now();
     const request = {

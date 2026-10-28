@@ -20,8 +20,8 @@ async function githubJson(accessToken: string, url: string): Promise<unknown> {
 
 /**
  * The GitHub user and a verified email. GitHub's `/user` email is whatever the user made public,
- * so the verified primary address from `/user/emails` is used instead; a user with no verified
- * address gets no email claim.
+ * so the primary address from `/user/emails` is used instead, when GitHub verified it; a user whose
+ * primary address is unverified gets no email claim.
  */
 async function githubIdentity(accessToken: string): Promise<UpstreamIdentity> {
   const user = asRecord(await githubJson(accessToken, USER_URL));
@@ -39,9 +39,9 @@ async function githubIdentity(accessToken: string): Promise<UpstreamIdentity> {
   }
   const emails = await githubJson(accessToken, EMAILS_URL);
   if (Array.isArray(emails)) {
-    const entries = emails.map((entry) => asRecord(entry));
-    const verified = entries.filter((entry) => entry["verified"] === true);
-    const primary = verified.find((entry) => entry["primary"] === true) ?? verified[0];
+    const primary = emails
+      .map((entry) => asRecord(entry))
+      .find((entry) => entry["primary"] === true && entry["verified"] === true);
     if (primary !== undefined && typeof primary["email"] === "string") {
       identity.email = primary["email"];
       identity.emailVerified = true;

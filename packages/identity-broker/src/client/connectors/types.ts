@@ -17,7 +17,7 @@ type Credentials = {
 export type OauthConnector = Credentials & {
   kind: "oauth";
   name: string;
-  /** Shown on the chooser button, e.g. "GitHub". */
+  /** Names the provider in the error descriptions sent back to the client, e.g. "GitHub". */
   label: string;
   authorizationEndpoint: string;
   tokenEndpoint: string;

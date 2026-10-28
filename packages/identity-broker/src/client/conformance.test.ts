@@ -23,8 +23,7 @@ afterEach(() => {
  * and nonce, and the token response, checked by openid-client.
  */
 async function signIn(options: { keySet?: KeySet } = {}) {
-  const upstream = fakeUpstream();
-  const h = await createHarness({ connectors: [upstream.connector], ...options });
+  const h = await createHarness({ connectors: [fakeUpstream()], ...options });
   const { clientId, clientSecret } = await h.registerClient("bristol");
 
   // Every request openid-client makes goes to the broker's handlers.
@@ -112,13 +111,13 @@ test("a token signed before a rotation verifies against the JWKS after it", asyn
   const idToken = tokens.id_token ?? "";
   // The deployment's IDENTITY_BROKER_KEYS changes; the JWKS keeps the retired public key.
   const rotated = await createHarness({
-    connectors: [fakeUpstream().connector],
+    connectors: [fakeUpstream()],
     keySet: await rotateKeySet(keySet),
   });
   expect((await verifyWithJwks(rotated, idToken, clientId)).payload.aud).toBe(clientId);
   // An emergency rotation drops the old key from the JWKS at once.
   const replaced = await createHarness({
-    connectors: [fakeUpstream().connector],
+    connectors: [fakeUpstream()],
     keySet: await rotateKeySetWithoutOverlap(keySet),
   });
   await expect(verifyWithJwks(replaced, idToken, clientId)).rejects.toThrow();
