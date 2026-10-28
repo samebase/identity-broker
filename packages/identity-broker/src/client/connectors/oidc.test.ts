@@ -84,6 +84,7 @@ const connector: OidcConnector = {
   label: "IdP",
   issuer: ISSUER,
   scopes: ["openid", "email", "profile"],
+  promptLogin: true,
   clientId: () => "c",
   clientSecret: () => "s",
 };

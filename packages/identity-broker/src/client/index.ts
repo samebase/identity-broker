@@ -228,7 +228,9 @@ export function defineIdentityBroker(config: IdentityBrokerConfig) {
         requestId: request.requestId,
       });
     }
-    if (request.freshLogin && connector.kind === "oauth") {
+    // Freshness is honored only as prompt=login upstream; a connector without it is refused, never
+    // pretended.
+    if (request.freshLogin && (connector.kind === "oauth" || !connector.promptLogin)) {
       return authorizationError({
         ...back,
         error: "login_required",

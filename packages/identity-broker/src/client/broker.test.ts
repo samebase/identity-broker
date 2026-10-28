@@ -3,6 +3,7 @@ import { decodeJwt } from "jose";
 import { afterEach, describe, expect, test, vi } from "vite-plus/test";
 import { api } from "../component/_generated/api.js";
 import { email } from "./connectors/email.js";
+import { google } from "./connectors/google.js";
 import {
   createHarness,
   fakeUpstream,
@@ -15,6 +16,7 @@ import {
 const REDIRECT_URI = "https://app.test/oauth/hub/callback";
 
 afterEach(() => {
+  vi.useRealTimers();
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
 });
@@ -401,6 +403,27 @@ describe("authorization code flow with an OAuth connector", () => {
     expect(new URL(fresh.headers.get("location") ?? "").searchParams.get("error")).toBe(
       "login_required",
     );
+  });
+
+  test("Google documents no prompt=login, so a fresh login through it is refused", async () => {
+    const h = await createHarness({
+      connectors: [google({ clientId: () => "google-client", clientSecret: () => "s" })],
+    });
+    const { clientId } = await h.registerClient({
+      appName: "Bristol",
+      firstParty: true,
+      redirectUri: REDIRECT_URI,
+    });
+    for (const extra of [{ prompt: "login" }, { max_age: "0" }]) {
+      const { challenge } = await pkce();
+      const response = await h.fetchBroker(authorizeUrl(h, { clientId, challenge, extra }));
+      const location = new URL(response.headers.get("location") ?? "");
+      expect(location.origin + location.pathname).toBe(REDIRECT_URI);
+      expect(location.searchParams.get("error")).toBe("login_required");
+      expect(location.searchParams.get("error_description")).toBe(
+        "Google cannot reauthenticate the user, which prompt=login or max_age asked for.",
+      );
+    }
   });
 
   test("a replayed or unknown upstream state is refused, a denied upstream goes back as access_denied", async () => {
@@ -1082,5 +1105,26 @@ describe("cleanup", () => {
     });
     const remaining = await h.t.query(api.clients.listByApp, { appId: "a" });
     expect(remaining.map((c) => c.clientId).sort()).toEqual(["preview-new", "prod-old"]);
+  });
+
+  test("one call drains a table that holds more than one batch", async () => {
+    const h = await createHarness({ connectors: [fakeUpstream().connector] });
+    vi.useFakeTimers();
+    const now = Date.now();
+    await h.t.run(async (ctx) => {
+      for (let row = 0; row < 450; row++) {
+        await ctx.db.insert("emailSends", { emailHash: `hash-${row}`, at: now - 2 * 3_600_000 });
+      }
+      await ctx.db.insert("emailSends", { emailHash: "recent", at: now });
+    });
+    const counts = await h.t.mutation(api.lifecycle.cleanup, {
+      now,
+      previewClientMaxAgeMs: 30 * 86_400_000,
+      signInRetentionMs: 90 * 86_400_000,
+    });
+    expect(counts.emailSends).toBe(200);
+    await h.t.finishAllScheduledFunctions(vi.runAllTimers);
+    const left = await h.t.run(async (ctx) => await ctx.db.query("emailSends").collect());
+    expect(left.map((row) => row.emailHash)).toEqual(["recent"]);
   });
 });
