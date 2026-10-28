@@ -100,6 +100,7 @@ test("openid-client completes a sign-in through the broker", async () => {
   expect(claims?.aud).toBe(clientId);
   expect(claims?.nonce).toBe(nonce);
   expect(claims?.["email"]).toBe("octo@example.com");
+  expect(claims?.["connector_account_id"]).toBe("42");
   // openid-client does not check the signature of an id_token from the token endpoint.
   const idToken = tokens.id_token ?? "";
   expect((await verifyWithJwks(h, idToken, clientId)).payload.sub).toBe(claims?.sub);

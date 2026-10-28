@@ -406,7 +406,11 @@ export function defineIdentityBroker(config: IdentityBrokerConfig) {
     });
     // Claims follow the granted scopes (OIDC Core 5.4).
     const scopes = exchange.scope.split(" ");
-    const claims: IdentityClaims = { sub, connector: exchange.identity.connector };
+    const claims: IdentityClaims = {
+      sub,
+      connector: exchange.identity.connector,
+      connector_account_id: exchange.identity.upstreamId,
+    };
     if (scopes.includes("email") && exchange.identity.email !== undefined) {
       claims.email = exchange.identity.email;
       claims.email_verified = exchange.identity.emailVerified === true;

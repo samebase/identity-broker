@@ -192,7 +192,7 @@ describe("key set validation", () => {
       keySet: parsed,
       issuer: "https://auth.test",
       clientId: "cl_test",
-      claims: { sub: "s", connector: "fake" },
+      claims: { sub: "s", connector: "fake", connector_account_id: "42" },
       nonce: undefined,
     });
     expect(decodeProtectedHeader(token).kid).toBe(kid);

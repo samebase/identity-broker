@@ -13,6 +13,11 @@ export const TOKEN_TTL_SECONDS = 5 * 60;
 export type IdentityClaims = {
   sub: string;
   connector: string;
+  /**
+   * The connector's own id for the account, such as the GitHub user id or Google's `sub`: with
+   * `connector`, the key an app that already keys users by provider and account id maps them by.
+   */
+  connector_account_id: string;
   email?: string;
   email_verified?: boolean;
   name?: string;
@@ -59,7 +64,7 @@ export async function assertKeySetUsable(keySet: KeySet): Promise<void> {
       keySet,
       issuer,
       clientId: issuer,
-      claims: { sub: "key-check", connector: "key-check" },
+      claims: { sub: "key-check", connector: "key-check", connector_account_id: "key-check" },
       nonce: undefined,
     });
   } catch (error) {

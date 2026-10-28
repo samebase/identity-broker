@@ -5,8 +5,8 @@ const { array, boolean, literal, number, object, optional, string, union } = v;
 
 /**
  * What a connector attested about the user. `upstreamId` is the connector's own stable id for the
- * account (the GitHub user id, the OIDC `sub`). The pairwise subject is derived from it on the
- * host, where the salt lives.
+ * account (the GitHub user id, the OIDC `sub`): the host derives the pairwise subject from it,
+ * where the salt lives, and the id_token carries it as `connector_account_id`.
  */
 export const vUpstreamIdentity = object({
   connector: string(),

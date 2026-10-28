@@ -257,7 +257,8 @@ describe("authorization code flow with an OAuth connector", () => {
     expect(claims["email"]).toBe("octo@example.com");
     expect(claims["email_verified"]).toBe(true);
     expect(claims["connector"]).toBe("fake");
-    expect(claims).not.toHaveProperty("connector_account_id");
+    // The upstream account id, for every client: every app of a hub is the hub owner's.
+    expect(claims["connector_account_id"]).toBe("42");
 
     // The subject is pairwise per app: another app of the same user gets another subject.
     const other = await h.registerClient("other");
