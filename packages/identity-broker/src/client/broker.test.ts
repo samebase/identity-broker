@@ -95,6 +95,7 @@ describe("metadata", () => {
       expect(metadata.subject_types_supported).toEqual(["pairwise"]);
       expect(metadata.code_challenge_methods_supported).toEqual(["S256"]);
       expect(metadata.authorization_response_iss_parameter_supported).toBe(true);
+      expect(metadata.claims_supported).toContain("connector_account_id");
     }
     const jwks = await (await h.fetchBroker(`${ISSUER}/.well-known/jwks.json`)).json();
     expect(jwks.keys).toHaveLength(1);
@@ -379,13 +380,14 @@ describe("authorization code flow with an OAuth connector", () => {
     expect(claims["email_verified"]).toBe(true);
     expect(claims["connector"]).toBe("fake");
     expect(typeof claims.auth_time).toBe("number");
-    expect(claims).not.toHaveProperty("connector_account_id");
+    // The fake GitHub user's id, the same in every app.
+    expect(claims["connector_account_id"]).toBe("42");
 
     const userinfo = await h.fetchBroker(`${ISSUER}/userinfo`, {
       headers: { Authorization: `Bearer ${body.access_token}` },
     });
     expect(userinfo.status).toBe(200);
-    expect((await userinfo.json()).sub).toBe(claims.sub);
+    expect(await userinfo.json()).toMatchObject({ sub: claims.sub, connector_account_id: "42" });
 
     const signIns = await h.t.run(async (ctx) => await ctx.db.query("signIns").collect());
     expect(signIns).toHaveLength(1);
@@ -415,6 +417,8 @@ describe("authorization code flow with an OAuth connector", () => {
         verifier: otherPkce.verifier,
       })
     ).json();
+    // The pairwise sub differs; the connector's account id is the same in both first-party apps.
+    expect(decodeJwt(otherTokens.id_token)).toMatchObject({ connector_account_id: "42" });
     expect(decodeJwt(otherTokens.id_token).sub).not.toBe(claims.sub);
   });
 
@@ -686,6 +690,8 @@ describe("authorization code flow with an OAuth connector", () => {
       const idToken = decodeJwt((await tokens.json()).id_token);
       // The callback's time, never the upstream's hour-old value.
       expect(idToken.auth_time).toBeGreaterThanOrEqual(signIn.createdSecond);
+      // The upstream id_token's `sub`.
+      expect(idToken["connector_account_id"]).toBe("24400320");
     }
   });
 
@@ -883,6 +889,8 @@ describe("authorization code flow with an OAuth connector", () => {
             ["email", "email_verified", "name", "picture"].includes(name),
           ),
         ).toEqual(claimed);
+        // Not a scoped claim: present with `openid` alone.
+        expect(claims["connector_account_id"]).toBe("42");
       }
     }
   });
@@ -1107,9 +1115,11 @@ describe("email connector", () => {
     expect(claims["email"]).toBe("nicu@example.com");
     expect(claims["email_verified"]).toBe(true);
     expect(claims["connector"]).toBe("email");
+    // The email connector's account id is the canonical address.
+    expect(claims["connector_account_id"]).toBe("nicu@example.com");
   });
 
-  test("a chooser request's email steps need the cookie, even with the right code", async () => {
+  test("a chooser request's email steps need the cookie; a third-party app gets no account id", async () => {
     const codes: string[] = [];
     const h = await createHarness({
       // @ts-expect-error a stand-in function reference; the harness replaces ctx.runAction.
@@ -1126,13 +1136,15 @@ describe("email connector", () => {
         return null;
       },
     });
-    const { clientId } = await h.registerClient({
+    const { clientId, clientSecret } = await h.registerClient({
       appName: "Stranger",
       firstParty: false,
       redirectUri: REDIRECT_URI,
     });
-    const { challenge } = await pkce();
-    const page = await h.fetchBroker(authorizeUrl(h, { clientId, challenge }));
+    const { verifier, challenge } = await pkce();
+    const page = await h.fetchBroker(
+      authorizeUrl(h, { clientId, challenge, extra: { scope: "openid" } }),
+    );
     const cookie = (page.headers.get("set-cookie") ?? "").split(";")[0] ?? "";
     const choose = (await page.text()).match(/href="([^"]*connector=email)"/)?.[1] ?? "";
     const chooseUrl = `${ISSUER}${choose.replace(/&amp;/g, "&")}`;
@@ -1164,6 +1176,21 @@ describe("email connector", () => {
     expect(ok.headers.get("set-cookie")).toBe(
       `__Host-broker_txn_${requestId}=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0`,
     );
+
+    // The consent promised a stable id: the pairwise sub, without the account id, which for the
+    // email connector is the address.
+    const code = new URL(ok.headers.get("location") ?? "").searchParams.get("code") ?? "";
+    const tokens = await (await exchange(h, { code, clientId, clientSecret, verifier })).json();
+    const userinfo = await (
+      await h.fetchBroker(`${ISSUER}/userinfo`, {
+        headers: { Authorization: `Bearer ${tokens.access_token}` },
+      })
+    ).json();
+    for (const claims of [decodeJwt(tokens.id_token), userinfo]) {
+      expect(claims).toMatchObject({ connector: "email" });
+      expect(Object.keys(claims)).not.toContain("connector_account_id");
+      expect(Object.keys(claims)).not.toContain("email");
+    }
   });
 
   test("the fifth miss locks the request", async () => {

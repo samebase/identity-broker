@@ -180,6 +180,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
             appId: string;
             authTime: number;
             clientId: string;
+            firstParty: boolean;
             identity: {
               connector: string;
               email?: string;

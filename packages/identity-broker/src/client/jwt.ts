@@ -13,6 +13,8 @@ export const TOKEN_TTL_SECONDS = 5 * 60;
 export type IdentityClaims = {
   sub: string;
   connector: string;
+  /** The connector's own id for the account, `upstreamId`, for a first-party app only. */
+  connector_account_id?: string;
   email?: string;
   email_verified?: boolean;
   name?: string;
@@ -80,6 +82,9 @@ export async function verifyAccessToken(args: {
       return null;
     }
     const claims: IdentityClaims = { sub: payload.sub, connector: payload["connector"] };
+    if (typeof payload["connector_account_id"] === "string") {
+      claims.connector_account_id = payload["connector_account_id"];
+    }
     if (typeof payload["email"] === "string") {
       claims.email = payload["email"];
     }
