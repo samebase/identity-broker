@@ -108,7 +108,7 @@ export class DeletionFailed extends Schema.TaggedError<DeletionFailed>()("Deleti
   reason: Schema.String,
 }) {
   override get message() {
-    return `Deleting client ${this.clientId} at ${this.issuer}/register/${this.clientId} failed: ${this.reason}. The client stays in state, and the next deploy or destroy tries again; a deploy with a new registrationToken stores that token for it.`;
+    return `Deleting client ${this.clientId} at ${this.issuer}/register/${this.clientId} failed: ${this.reason}. The client stays in state, and the next destroy tries again with the registration token in state. After a 401, deploy once with a new registrationToken, which stores it without a hub call, then destroy.`;
   }
 }
 
@@ -181,8 +181,8 @@ const register = (issuer: string, token: string, props: ClientProps) =>
           },
           body: JSON.stringify({
             redirect_uris: [props.redirectUri],
-            // The hub's only client authentication, and the one Convex Auth's generic OAuth method
-            // uses: the client credentials in the token request body.
+            // Convex Auth's generic OAuth method posts the client credentials in the body; the
+            // RFC 7591 default is client_secret_basic.
             token_endpoint_auth_method: "client_secret_post",
           }),
           redirect: "error",

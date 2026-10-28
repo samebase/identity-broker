@@ -5,10 +5,10 @@ The broker is a federated OpenID Provider in the shape of Dex: upstream connecto
 ## What is stored
 
 Apps (an app id and its allowed callback hosts), their registration tokens (hashed), clients (one
-per deployment: exact redirect URI, hashed secret), and authorization requests. A request lives ten
-minutes from `/authorize`; once the connector attests the user, it holds the hash of its
-authorization code and lives the sixty seconds of the code, and redeeming the code deletes it.
-Nothing about a user outlives the request that carried it.
+per deployment: exact redirect URI, hashed secret, token endpoint authentication method), and
+authorization requests. A request lives ten minutes from `/authorize`; once the connector attests
+the user, it holds the hash of its authorization code and lives the sixty seconds of the code, and
+redeeming the code deletes it. Nothing about a user outlives the request that carried it.
 
 The host schedules the component's `cleanup` daily from a cron, as the
 [identity-hub](https://github.com/samebase/identity-hub) template does; nothing else deletes expired
@@ -29,9 +29,12 @@ and a client of another app both answer 404, not 403, so a token learns nothing 
 clients. The delete has the shape of RFC 7592's, which the broker does not implement: no
 registration access token per client, and a missing client answers 404 rather than 401.
 
-`deleteApp` deletes the app, its registration tokens and its clients in one transaction: an app has
-a client per live deployment, a handful once previews unregister on destroy. A registration that
-read its token before the deletion cannot create its client after it, so no client outlives its app.
+`deleteApp` deletes the app, its registration tokens and its clients in one transaction. An app with
+many clients can exceed what one Convex transaction may write; previews unregister themselves on
+destroy, so an app keeps a handful, one per live deployment. A registration that read its token
+before the deletion cannot create its client after it, so no client outlives its app. The token
+endpoint reads the client and its app in the same transaction that redeems the code, so a deletion
+lands wholly before a redemption or after it.
 
 ## Issuer and connectors
 
@@ -68,18 +71,12 @@ correlate a user, which the pairwise `sub` alone prevents: every app of a hub is
   hosts keep the same subjects.
 - No loopback exception on redirect URIs: a local deployment registers its exact
   `http://127.0.0.1:<port>/...` URI.
-- `client_secret_post` is the only client authentication: no `client_secret_basic`, which RFC 6749
-  2.3.1 requires, and registration requires `client_secret_post` instead of defaulting to Basic (RFC
-  7591 2).
-- `/authorize` accepts GET only, not the POST that OIDC Core 3.1.2.1 requires.
 - No UserInfo endpoint (OIDC Core 5.3) and no `userinfo_endpoint` in discovery (OIDC Discovery 3):
   the claims the scopes release are in the id_token, not delivered through UserInfo (OIDC Core 5.4).
 - The token response's `access_token` (RFC 6749 5.1, OIDC Core 3.1.3.3) is an opaque random value
   that grants nothing: the broker has no protected resource.
 - `prompt=login` and `max_age` answer `invalid_request` (OIDC Core 3.1.2.1), and no id_token carries
   `auth_time` (OIDC Core 2): the broker cannot attest when the user last authenticated upstream.
-- Discovery is at `/.well-known/openid-configuration` (OIDC Discovery 4) only, not at
-  `/.well-known/oauth-authorization-server` (RFC 8414 3).
 - A replayed authorization code is refused, since its redemption deleted it, and revokes nothing
   (RFC 6749 4.1.2): the id_token cannot be recalled and the access token grants nothing.
 
@@ -99,41 +96,71 @@ The retired public key stays in the JWKS for ten minutes from `keys --rotate`: t
 id_token lifetime, so a token the old key signed just before the hub read the new key set verifies
 until it expires, plus the JWKS's five-minute max-age as the margin for verifier caches and clocks
 and for setting the output on the hub, which should follow at once. After a key compromise,
-`keys --rotate --no-overlap` drops the retired keys at once, so every token signed before stops
-verifying; the salt is kept.
+`keys --rotate --no-overlap` drops the retired keys from the JWKS at once; the salt is kept. A
+verifier that fetched the JWKS before still accepts the tokens they signed until its copy expires,
+at most the five-minute max-age later.
 
 ## Moving a hub from 0.5.0 to 0.6.0
 
 A push validates every existing document of a table the schema lists, and fails on a field the
 schema no longer declares. Rows that 0.5.0 wrote in `apps`, `registrationTokens`, `clients` and
 `authRequests` carry such fields, and 0.5.0's schema requires most of them, so no mutation of 0.5.0
-can strip them, and 0.5.0 has no command that would. The move is therefore: keep the rows outside
-the deployment, empty the tables, push 0.6.0, and import the rows back without the removed fields.
-The app ids and client ids come back unchanged, so every `sub` stays the same and no deployment
-registers again. Sign-ins and registrations fail between the second and the fourth step.
+can strip them, and 0.5.0 has no command that would. The move therefore takes the rows out through a
+backup and brings them back without the removed fields.
 
-1. Save the projected rows, here for the production hub (an expired token is left out, because 0.6.0
-   tokens do not expire):
+The app ids, client ids, client secret hashes, registration token hashes, the salt and the connector
+names are what the subjects and the credentials depend on. All of them come back unchanged: the rows
+from the backup, the salt from `IDENTITY_BROKER_KEYS`, which the move leaves alone, and the
+connector names from the hub's code, which keeps them. So every `sub` stays the same, and no
+deployment registers again. Sign-ins and registrations fail between the empty import and the
+restore; pause the stacks that register clients until then.
+
+1. Take a complete backup and keep it:
 
    ```sh
-   data() { npx convex data "$1" --component identityBroker --prod --format jsonl --limit 1000; }
-   data apps | jq -c '{appId, allowedCallbackHosts}' > apps.jsonl
-   data registrationTokens | jq -c --argjson now "$(date +%s)000" \
-     'select(.expiresAt > $now) | {tokenHash, appId, createdAt}' > registrationTokens.jsonl
-   data clients | jq -c '{clientId, appId, secretHash, redirectUri}' > clients.jsonl
+   npx convex export --prod --path hub-0.5.0.zip
+   unzip -l hub-0.5.0.zip | grep identityBroker
    ```
 
-2. Empty the tables with 0.5.0's own commands:
-   `npx convex run --prod identityBroker:deleteApp '{"appId":"<app id>"}'` for each app deletes its
-   row, tokens and clients, and `npx convex run --prod identityBroker:cleanup` deletes the expired
-   `authRequests`. A request still live fails the next step; run `cleanup` again ten minutes later.
-3. Push 0.6.0, with the hub's `email()` connector and `previewClientIdleDays` removed.
-4. Import the rows back:
-   `npx convex import --component identityBroker --prod --table <table> --replace <table>.jsonl` for
-   `apps`, `registrationTokens` and `clients`.
-5. Delete the tables 0.6.0 no longer names, `authorizationCodes`, `signIns` and `emailSends`, in the
+   The listing shows the component's tables as `<dir>/<table>/documents.jsonl`. If it shows none,
+   stop: the backup does not hold the component.
+
+2. Project the three durable tables to the 0.6.0 fields. An expired token is left out, because 0.6.0
+   tokens do not expire:
+
+   ```sh
+   dir=<the directory the listing shows>
+   table() { unzip -p hub-0.5.0.zip "$dir/$1/documents.jsonl"; }
+   table apps | jq -c '{appId, allowedCallbackHosts}' > apps.jsonl
+   table registrationTokens | jq -c --argjson now "$(date +%s)000" \
+     'select(.expiresAt > $now) | {tokenHash, appId, createdAt}' > registrationTokens.jsonl
+   table clients | jq -c '{clientId, appId, secretHash, tokenEndpointAuthMethod, redirectUri}' \
+     > clients.jsonl
+   ```
+
+3. With 0.5.0 still deployed, empty the four changing tables by importing an empty array:
+
+   ```sh
+   echo '[]' > empty.json
+   for t in apps registrationTokens clients authRequests; do
+     npx convex import --prod --component identityBroker --table "$t" --replace empty.json
+   done
+   ```
+
+4. Push 0.6.0, with the hub's `email()` connector and `previewClientIdleDays` removed.
+5. Import the projected rows:
+
+   ```sh
+   for t in apps registrationTokens clients; do
+     npx convex import --prod --component identityBroker --table "$t" --replace "$t.jsonl"
+   done
+   ```
+
+6. Verify the counts. Each import reports the documents it wrote; it must equal `wc -l < $t.jsonl`.
+   Each file must have as many lines as `table $t | wc -l` in the backup, less the expired tokens.
+7. Delete the tables 0.6.0 no longer names, `authorizationCodes`, `signIns` and `emailSends`, in the
    dashboard (the component dropdown, then Delete table). The push keeps them: Convex's schema docs
    say a schema validates only the tables it lists, and documents in other tables stay. They hold
    code hashes, pairwise subjects and email address hashes.
-
-A client registered for `client_secret_basic` comes back, but it can no longer authenticate.
+8. Resume the stacks. Consumers must now send the connector: `connector=<name>` on the authorize
+   URL.

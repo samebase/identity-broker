@@ -103,7 +103,8 @@ client and answers 204. A client that is gone or belongs to another app answers 
 ## Standards
 
 OAuth 2.1 (code flow, PKCE S256, exact redirect URIs, `iss` on responses), OpenID Connect Core and
-Discovery, RFC 7591, RFC 9207, RFC 9700. Departures are named in [docs/design.md](docs/design.md).
+Discovery, RFC 7591, RFC 8414, RFC 9207, RFC 9700. Departures are named in
+[docs/design.md](docs/design.md).
 
 ## License
 

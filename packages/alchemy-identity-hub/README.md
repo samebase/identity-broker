@@ -36,8 +36,9 @@ The hub registers a client at `POST <issuer>/register` (RFC 7591) and deletes on
 has no endpoint to read or change a client. Each request times out after 15 seconds and does not
 follow redirects.
 
-- First deploy: `POST <issuer>/register` for `client_secret_post`, the hub's only client
-  authentication and the one Convex Auth's generic OAuth method uses.
+- First deploy: `POST <issuer>/register`. It asks for `client_secret_post`, because Convex Auth's
+  generic OAuth method posts the client credentials in the body; the hub's default is
+  `client_secret_basic`.
 - A changed `issuer` or `redirectUri` replaces the resource: a new client is registered, and the
   replaced client is deleted on the hub.
 - A changed `registrationToken` is stored in state with no hub call, so a later delete sends the
@@ -45,9 +46,10 @@ follow redirects.
 - Read returns the state as it is.
 - Destroy sends `DELETE <issuer>/register/<client id>` with the token in state. A 204, or the hub's
   404 with the error `invalid_client` for a client that is already gone, ends the resource. Any
-  other answer or a network error fails with `DeletionFailed` and keeps the resource in state. A 401
-  means the token in state is wrong or revoked: deploy once with a new `registrationToken`, which
-  stores it without a hub call, then destroy again.
+  other answer or a network error fails with `DeletionFailed` and keeps the resource in state; the
+  next destroy tries again with the token in state. A deploy with unchanged props makes no request.
+  A 401 means the token in state is wrong or revoked: deploy once with a new `registrationToken`,
+  which stores it without a hub call, then destroy again.
 - A `redirectUri` that resolves only during the deploy registers in place: the new client at the new
   `issuer` with the new token, then a delete of the old client at the old `issuer` with the old
   token. The new client is kept whatever the delete answers; a failed delete is a warning that names
@@ -78,7 +80,8 @@ follow redirects.
   answer. Check `issuer`.
 - `DeletionFailed`: a delete could not reach the hub within 15 seconds, was redirected, or got an
   answer other than 204 or the hub's `invalid_client` 404, such as a 401. The resource stays in
-  state, and the next deploy or destroy tries again with the token of the latest deploy.
+  state, and the next destroy tries again with the token in state; after a 401, a deploy with a new
+  `registrationToken` stores it first.
 
 A message carries only fixed sentences, a status, or an error name and code, such as `ECONNREFUSED`.
 No message or log line contains the token, the client secret, or any text from the hub's answer.

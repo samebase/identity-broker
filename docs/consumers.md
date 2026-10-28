@@ -50,8 +50,8 @@ curl -sS -X POST "$HUB/register" \
   -d "{\"redirect_uris\":[\"$CONVEX_SITE_URL/oauth/hub/callback\"],\"token_endpoint_auth_method\":\"client_secret_post\"}"
 ```
 
-`client_secret_post` is required: it is the hub's only client authentication, and Convex Auth's
-generic OAuth method posts the client credentials in the body.
+`client_secret_post` because Convex Auth's generic OAuth method posts the client credentials in the
+body; without it the client gets the RFC 7591 default, `client_secret_basic`.
 
 Store the returned `client_id` and `client_secret` on that deployment as `HUB_CLIENT_ID` and
 `HUB_CLIENT_SECRET` (`npx convex env set --deployment <name> ...`). Keep the registration token in
