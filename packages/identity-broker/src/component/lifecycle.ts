@@ -16,7 +16,6 @@ const vCleanupArgs = object({
 
 const vCleanupCounts = object({
   authRequests: number(),
-  authorizationCodes: number(),
   previewClients: number(),
   signIns: number(),
 });
@@ -37,14 +36,6 @@ async function cleanupBatch(
     .take(BATCH);
   for (const request of requests) {
     await ctx.db.delete("authRequests", request._id);
-  }
-
-  const codes = await ctx.db
-    .query("authorizationCodes")
-    .withIndex("by_expires_at", (q) => q.lt("expiresAt", args.now))
-    .take(BATCH);
-  for (const code of codes) {
-    await ctx.db.delete("authorizationCodes", code._id);
   }
 
   const { previewClientMaxAgeMs } = args;
@@ -76,7 +67,6 @@ async function cleanupBatch(
 
   const counts = {
     authRequests: requests.length,
-    authorizationCodes: codes.length,
     previewClients: previewClients.length,
     signIns: signIns.length,
   };
@@ -91,11 +81,11 @@ async function cleanupBatch(
 }
 
 /**
- * Deletes what has run out: expired requests and codes, preview clients nobody used for
- * `previewClientMaxAgeMs` when the host passes it, and audit rows older than `signInRetentionMs`.
- * The host schedules this daily from a cron; production and development clients are never touched.
- * The counts are this call's batch: a full batch schedules the next one, so one call drains
- * everything older than `now`.
+ * Deletes what has run out: expired requests, a completed one with its code, preview clients
+ * nobody used for `previewClientMaxAgeMs` when the host passes it, and audit rows older than
+ * `signInRetentionMs`. The host schedules this daily from a cron; production and development
+ * clients are never touched. The counts are this call's batch: a full batch schedules the next
+ * one, so one call drains everything older than `now`.
  */
 export const cleanup = mutation({
   args: vCleanupArgs,

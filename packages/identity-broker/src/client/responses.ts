@@ -64,15 +64,3 @@ export function authorizationError(args: {
     params: { error: args.error, error_description: args.description },
   });
 }
-
-/** The parameters of a GET query or a form POST, which the authorization endpoint accepts alike. */
-export async function readParameters(request: Request): Promise<URLSearchParams | null> {
-  if (request.method === "GET") {
-    return new URL(request.url).searchParams;
-  }
-  const contentType = request.headers.get("content-type")?.toLowerCase() ?? "";
-  if (!contentType.startsWith("application/x-www-form-urlencoded")) {
-    return null;
-  }
-  return new URLSearchParams(await request.text());
-}

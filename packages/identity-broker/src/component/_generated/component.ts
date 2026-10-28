@@ -54,19 +54,11 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
       >;
     };
     authRequests: {
-      abandon: FunctionReference<
-        "mutation",
-        "internal",
-        { requestId: string },
-        { redirectUri: string; state?: string } | null,
-        Name
-      >;
       claimUpstream: FunctionReference<
         "mutation",
         "internal",
         { connector: string; now: number; upstreamStateHash: string },
         | {
-            connector: string;
             redirectUri: string;
             requestId: string;
             state?: string;
@@ -74,12 +66,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
             upstreamCodeVerifier: string;
             upstreamNonce?: string;
           }
-        | {
-            redirectUri: string;
-            requestId: string;
-            state?: string;
-            status: "expired";
-          }
+        | { redirectUri: string; state?: string; status: "expired" }
         | { status: "missing" },
         Name
       >;
@@ -100,14 +87,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
           now: number;
           requestId: string;
         },
-        | { ok: true; redirectUri: string; state?: string }
-        | {
-            error: "expired" | "wrong_status";
-            ok: false;
-            redirectUri: string;
-            state?: string;
-          }
-        | { error: "not_found"; ok: false },
+        boolean,
         Name
       >;
       create: FunctionReference<
@@ -117,12 +97,15 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
           appId: string;
           clientId: string;
           codeChallenge: string;
+          connector: string;
           expiresAt: number;
           nonce?: string;
           redirectUri: string;
-          requestId: string;
           scope: string;
           state?: string;
+          upstreamCodeVerifier: string;
+          upstreamNonce?: string;
+          upstreamStateHash: string;
         },
         null,
         Name
@@ -139,7 +122,6 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         },
         | {
             appId: string;
-            clientId: string;
             identity: {
               connector: string;
               email?: string;
@@ -153,95 +135,6 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
             scope: string;
           }
         | { description: string; ok: false },
-        Name
-      >;
-      get: FunctionReference<
-        "query",
-        "internal",
-        { requestId: string },
-        | {
-            appId: string;
-            clientId: string;
-            codeChallenge: string;
-            expiresAt: number;
-            nonce?: string;
-            redirectUri: string;
-            requestId: string;
-            scope: string;
-            state?: string;
-            status: "pending";
-          }
-        | {
-            appId: string;
-            clientId: string;
-            codeChallenge: string;
-            connector: string;
-            expiresAt: number;
-            nonce?: string;
-            redirectUri: string;
-            requestId: string;
-            scope: string;
-            state?: string;
-            status: "upstream";
-            upstreamCodeVerifier: string;
-            upstreamNonce?: string;
-            upstreamStateHash: string;
-          }
-        | {
-            appId: string;
-            clientId: string;
-            codeChallenge: string;
-            connector: string;
-            expiresAt: number;
-            nonce?: string;
-            redirectUri: string;
-            requestId: string;
-            scope: string;
-            state?: string;
-            status: "claimed";
-          }
-        | {
-            appId: string;
-            clientId: string;
-            codeChallenge: string;
-            expiresAt: number;
-            identity: {
-              connector: string;
-              email?: string;
-              emailVerified?: boolean;
-              name?: string;
-              picture?: string;
-              upstreamId: string;
-            };
-            nonce?: string;
-            redirectUri: string;
-            requestId: string;
-            scope: string;
-            state?: string;
-            status: "completed";
-          }
-        | null,
-        Name
-      >;
-      startUpstream: FunctionReference<
-        "mutation",
-        "internal",
-        {
-          connector: string;
-          now: number;
-          requestId: string;
-          upstreamCodeVerifier: string;
-          upstreamNonce?: string;
-          upstreamStateHash: string;
-        },
-        | { ok: true; redirectUri: string; state?: string }
-        | {
-            error: "expired" | "wrong_status";
-            ok: false;
-            redirectUri: string;
-            state?: string;
-          }
-        | { error: "not_found"; ok: false },
         Name
       >;
     };
@@ -325,7 +218,6 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         },
         {
           authRequests: number;
-          authorizationCodes: number;
           previewClients: number;
           signIns: number;
         },

@@ -9,229 +9,131 @@ const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
 
 const now = 1_700_000_000_000;
 const verifier = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
+/** The request lives this long from /authorize; its code then lives `CODE_TTL`. */
+const REQUEST_TTL = 600_000;
+const CODE_TTL = 60_000;
 
-async function pendingRequest(requestId = "r1", t = convexTest(schema, modules)) {
+/** A request /authorize sent to the "github" connector at `now`. */
+async function upstreamRequest() {
+  const t = convexTest(schema, modules);
   await t.mutation(api.authRequests.create, {
-    requestId,
     appId: "app",
     clientId: "cl",
     redirectUri: "https://app.test/cb",
     scope: "openid",
     state: "s",
     codeChallenge: await sha256Base64Url(verifier),
-    expiresAt: now + 600_000,
+    expiresAt: now + REQUEST_TTL,
+    connector: "github",
+    upstreamStateHash: "sh",
+    upstreamCodeVerifier: "v",
   });
   return t;
 }
 
-describe("upstream path", () => {
-  test("pending, upstream, claimed, completed, exchanged", async () => {
-    const t = await pendingRequest();
-    const started = await t.mutation(api.authRequests.startUpstream, {
-      requestId: "r1",
-      connector: "github",
-      upstreamStateHash: "sh",
-      upstreamCodeVerifier: "v",
-      now,
-    });
-    expect(started).toEqual({ ok: true, redirectUri: "https://app.test/cb", state: "s" });
+type T = Awaited<ReturnType<typeof upstreamRequest>>;
 
-    const claim = await t.mutation(api.authRequests.claimUpstream, {
-      upstreamStateHash: "sh",
-      connector: "github",
-      now,
-    });
-    expect(claim.status).toBe("claimed");
+const claim = (t: T, at: number, connector = "github") =>
+  t.mutation(api.authRequests.claimUpstream, { upstreamStateHash: "sh", connector, now: at });
+
+/** Claims the request and completes it at `at` with the code hash "ch". */
+async function complete(t: T, at: number) {
+  const claimed = await claim(t, at);
+  if (claimed.status !== "claimed") {
+    throw new Error(`expected a claim, got ${claimed.status}`);
+  }
+  return await t.mutation(api.authRequests.complete, {
+    requestId: claimed.requestId,
+    identity: { connector: "github", upstreamId: "42" },
+    codeHash: "ch",
+    codeExpiresAt: at + CODE_TTL,
+    now: at,
+  });
+}
+
+const exchange = (t: T, at: number, client: { clientId?: string; codeVerifier?: string } = {}) =>
+  t.mutation(api.authRequests.exchangeCode, {
+    codeHash: "ch",
+    clientId: client.clientId ?? "cl",
+    redirectUri: "https://app.test/cb",
+    codeVerifier: client.codeVerifier ?? verifier,
+    now: at,
+  });
+
+const requests = (t: T) => t.run(async (ctx) => await ctx.db.query("authRequests").collect());
+
+describe("one request from /authorize to the token endpoint", () => {
+  test("upstream, claimed, completed, redeemed once", async () => {
+    const t = await upstreamRequest();
+    // Another connector's callback cannot claim it, and the request keeps waiting.
+    expect(await claim(t, now, "google")).toEqual({ status: "missing" });
+    expect(await complete(t, now)).toBe(true);
     // The claim is single use.
-    expect(
-      await t.mutation(api.authRequests.claimUpstream, {
-        upstreamStateHash: "sh",
-        connector: "github",
-        now,
-      }),
-    ).toEqual({ status: "missing" });
-    // A claimed request cannot restart.
-    const restart = await t.mutation(api.authRequests.startUpstream, {
-      requestId: "r1",
-      connector: "github",
-      upstreamStateHash: "x",
-      upstreamCodeVerifier: "v",
-      now,
-    });
-    expect(restart).toMatchObject({ ok: false, error: "wrong_status" });
+    expect(await claim(t, now)).toEqual({ status: "missing" });
 
-    const completed = await t.mutation(api.authRequests.complete, {
-      requestId: "r1",
-      identity: { connector: "github", upstreamId: "42", email: "a@b.co", emailVerified: true },
-      codeHash: "ch",
-      codeExpiresAt: now + 60_000,
-      now,
-    });
-    expect(completed.ok).toBe(true);
-
-    const wrongVerifier = await t.mutation(api.authRequests.exchangeCode, {
-      codeHash: "ch",
-      clientId: "cl",
-      codeVerifier: "x".repeat(43),
-      now,
-    });
-    expect(wrongVerifier).toMatchObject({
+    // A wrong verifier or another client leaves the code redeemable.
+    expect(await exchange(t, now, { codeVerifier: "x".repeat(43) })).toMatchObject({
       ok: false,
       description: expect.stringMatching(/code_verifier/),
     });
-    const exchanged = await t.mutation(api.authRequests.exchangeCode, {
-      codeHash: "ch",
-      clientId: "cl",
-      redirectUri: "https://app.test/cb",
-      codeVerifier: verifier,
-      now,
+    expect(await exchange(t, now, { clientId: "other" })).toMatchObject({
+      ok: false,
+      description: expect.stringMatching(/another client/),
     });
-    expect(exchanged).toMatchObject({
+    expect(await exchange(t, now)).toEqual({
       ok: true,
       appId: "app",
-      identity: { upstreamId: "42" },
+      scope: "openid",
+      identity: { connector: "github", upstreamId: "42" },
     });
-    expect(await t.query(api.authRequests.get, { requestId: "r1" })).toBeNull();
-    const replay = await t.mutation(api.authRequests.exchangeCode, {
-      codeHash: "ch",
-      clientId: "cl",
-      codeVerifier: verifier,
-      now,
+    // The redemption deleted the request, so the code cannot be redeemed again.
+    expect(await requests(t)).toEqual([]);
+    expect(await exchange(t, now)).toMatchObject({
+      ok: false,
+      description: expect.stringMatching(/already used/),
     });
-    expect(replay).toMatchObject({ ok: false, description: expect.stringMatching(/already used/) });
   });
 
-  test("expiry at every step", async () => {
-    const t = await pendingRequest();
-    const late = now + 600_001;
-    expect(
-      await t.mutation(api.authRequests.startUpstream, {
-        requestId: "r1",
-        connector: "g",
-        upstreamStateHash: "sh",
-        upstreamCodeVerifier: "v",
-        now: late,
-      }),
-    ).toMatchObject({ ok: false, error: "expired" });
-    await t.mutation(api.authRequests.startUpstream, {
-      requestId: "r1",
-      connector: "g",
-      upstreamStateHash: "sh",
-      upstreamCodeVerifier: "v",
-      now,
-    });
-    expect(
-      await t.mutation(api.authRequests.claimUpstream, {
-        upstreamStateHash: "sh",
-        connector: "g",
-        now: late,
-      }),
-    ).toEqual({
+  test("each status runs out at its expiresAt", async () => {
+    // Upstream: a late callback deletes the request and goes back with the redirect URI and state.
+    const late = await upstreamRequest();
+    expect(await claim(late, now + REQUEST_TTL)).toEqual({
       status: "expired",
-      requestId: "r1",
       redirectUri: "https://app.test/cb",
       state: "s",
     });
-    expect(await t.query(api.authRequests.get, { requestId: "r1" })).toBeNull();
-  });
+    expect(await requests(late)).toEqual([]);
 
-  test("another connector's callback cannot claim the request", async () => {
-    const t = await pendingRequest();
-    await t.mutation(api.authRequests.startUpstream, {
-      requestId: "r1",
-      connector: "google",
-      upstreamStateHash: "sh",
-      upstreamCodeVerifier: "v",
-      upstreamNonce: "n",
-      now,
-    });
+    // Claimed: an exchange upstream that outlasts the request completes nothing.
+    const slow = await upstreamRequest();
+    const claimed = await claim(slow, now + REQUEST_TTL - 1);
+    if (claimed.status !== "claimed") {
+      throw new Error(`expected a claim, got ${claimed.status}`);
+    }
     expect(
-      await t.mutation(api.authRequests.claimUpstream, {
-        upstreamStateHash: "sh",
-        connector: "github",
-        now,
-      }),
-    ).toEqual({ status: "missing" });
-    expect(await t.query(api.authRequests.get, { requestId: "r1" })).toMatchObject({
-      status: "upstream",
-    });
-    expect(
-      await t.mutation(api.authRequests.claimUpstream, {
-        upstreamStateHash: "sh",
-        connector: "google",
-        now,
-      }),
-    ).toMatchObject({ status: "claimed", connector: "google", upstreamNonce: "n" });
-  });
-
-  test("a completed request outlives its code, so cleanup keeps it until the code is gone", async () => {
-    const t = await pendingRequest();
-    // The request expires at now + 600_000; the user finishes just before that.
-    const late = now + 599_000;
-    await t.mutation(api.authRequests.startUpstream, {
-      requestId: "r1",
-      connector: "g",
-      upstreamStateHash: "sh",
-      upstreamCodeVerifier: "v",
-      now: late,
-    });
-    await t.mutation(api.authRequests.claimUpstream, {
-      upstreamStateHash: "sh",
-      connector: "g",
-      now: late,
-    });
-    await t.mutation(api.authRequests.complete, {
-      requestId: "r1",
-      identity: { connector: "g", upstreamId: "1" },
-      codeHash: "ch",
-      codeExpiresAt: late + 60_000,
-      now: late,
-    });
-    const cleanup = (at: number) =>
-      t.mutation(api.lifecycle.cleanup, {
-        now: at,
-        previewClientMaxAgeMs: 30 * 86_400_000,
-        signInRetentionMs: 90 * 86_400_000,
-      });
-    expect(await cleanup(late + 59_000)).toMatchObject({ authRequests: 0 });
-    expect(
-      await t.mutation(api.authRequests.exchangeCode, {
+      await slow.mutation(api.authRequests.complete, {
+        requestId: claimed.requestId,
+        identity: { connector: "github", upstreamId: "42" },
         codeHash: "ch",
-        clientId: "cl",
-        codeVerifier: verifier,
-        now: late + 59_000,
+        codeExpiresAt: now + REQUEST_TTL + CODE_TTL,
+        now: now + REQUEST_TTL,
       }),
-    ).toMatchObject({ ok: true });
-  });
+    ).toBe(false);
 
-  test("an expired code is refused", async () => {
-    const t = await pendingRequest();
-    await t.mutation(api.authRequests.startUpstream, {
-      requestId: "r1",
-      connector: "g",
-      upstreamStateHash: "sh",
-      upstreamCodeVerifier: "v",
-      now,
+    // Completed: the code expires CODE_TTL after completion, even past the request's own lifetime,
+    // and cleanup keeps the request until then.
+    const finished = await upstreamRequest();
+    const completedAt = now + REQUEST_TTL - 1;
+    expect(await complete(finished, completedAt)).toBe(true);
+    const codeExpiresAt = completedAt + CODE_TTL;
+    await finished.mutation(api.lifecycle.cleanup, {
+      now: codeExpiresAt,
+      signInRetentionMs: 90 * 86_400_000,
     });
-    await t.mutation(api.authRequests.claimUpstream, {
-      upstreamStateHash: "sh",
-      connector: "g",
-      now,
+    expect(await exchange(finished, codeExpiresAt)).toMatchObject({
+      ok: false,
+      description: expect.stringMatching(/expired/),
     });
-    await t.mutation(api.authRequests.complete, {
-      requestId: "r1",
-      identity: { connector: "g", upstreamId: "1" },
-      codeHash: "ch",
-      codeExpiresAt: now + 60_000,
-      now,
-    });
-    expect(
-      await t.mutation(api.authRequests.exchangeCode, {
-        codeHash: "ch",
-        clientId: "cl",
-        codeVerifier: verifier,
-        now: now + 60_001,
-      }),
-    ).toMatchObject({ ok: false, description: expect.stringMatching(/expired/) });
+    expect(await exchange(finished, codeExpiresAt - 1)).toMatchObject({ ok: true });
   });
 });

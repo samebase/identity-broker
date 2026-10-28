@@ -40,7 +40,6 @@ import {
   authorizationResponse,
   json,
   oauthError,
-  readParameters,
   redirect,
 } from "./responses.js";
 import { pairwiseSubject, randomToken, sha256Hex } from "./subject.js";
@@ -151,14 +150,7 @@ export function defineIdentityBroker(config: IdentityBrokerConfig) {
   );
 
   const authorize = httpActionGeneric(async (ctx, request) => {
-    const params = await readParameters(request);
-    if (params === null) {
-      return oauthError(
-        415,
-        "invalid_request",
-        "A POST must be application/x-www-form-urlencoded.",
-      );
-    }
+    const params = new URL(request.url).searchParams;
     const target = validateAuthorizeTarget(params);
     if (!target.ok) {
       return errorPage("Invalid sign-in request", target.description, target.status);
@@ -184,7 +176,7 @@ export function defineIdentityBroker(config: IdentityBrokerConfig) {
       issuer,
       state: params.get("state") ?? undefined,
     };
-    const rest = validateAuthorizeRest(params, target.value);
+    const rest = validateAuthorizeRest(params);
     if (!rest.ok) {
       return authorizationError({ ...back, error: rest.error, description: rest.description });
     }
@@ -198,10 +190,8 @@ export function defineIdentityBroker(config: IdentityBrokerConfig) {
       });
     }
     const scopes = SCOPES.filter((scope) => rest.value.scopes.includes(scope));
-    const now = Date.now();
-    const requestId = randomToken(24);
+    const start = await startUpstream({ connector, callbackUrl: callbackUrl(connector) });
     await ctx.runMutation(component.authRequests.create, {
-      requestId,
       appId: client.appId,
       clientId: client.clientId,
       redirectUri: client.redirectUri,
@@ -209,30 +199,12 @@ export function defineIdentityBroker(config: IdentityBrokerConfig) {
       ...(rest.value.state === undefined ? {} : { state: rest.value.state }),
       ...(rest.value.nonce === undefined ? {} : { nonce: rest.value.nonce }),
       codeChallenge: rest.value.codeChallenge,
-      expiresAt: now + AUTH_REQUEST_TTL_MS,
-    });
-    const start = await startUpstream({ connector, callbackUrl: callbackUrl(connector) });
-    const result = await ctx.runMutation(component.authRequests.startUpstream, {
-      requestId,
+      expiresAt: Date.now() + AUTH_REQUEST_TTL_MS,
       connector: connector.name,
       upstreamStateHash: await sha256Hex(start.state),
       upstreamCodeVerifier: start.codeVerifier,
       ...(start.nonce === undefined ? {} : { upstreamNonce: start.nonce }),
-      now,
     });
-    if (!result.ok) {
-      return result.error === "not_found"
-        ? errorPage(
-            "Sign-in not found",
-            "This sign-in is unknown. Return to the app and try again.",
-            404,
-          )
-        : authorizationError({
-            ...back,
-            error: "access_denied",
-            description: `The sign-in ${result.error === "expired" ? "expired" : "already moved on"}.`,
-          });
-    }
     return redirect(start.url);
   });
 
@@ -275,7 +247,6 @@ export function defineIdentityBroker(config: IdentityBrokerConfig) {
           nonce: claim.upstreamNonce,
         });
       } catch (error) {
-        await ctx.runMutation(component.authRequests.abandon, { requestId: claim.requestId });
         // The provider's error code picks one fixed answer; nothing the provider wrote is echoed.
         if (error instanceof oauth.AuthorizationResponseError && error.error === "access_denied") {
           return authorizationError({
@@ -312,7 +283,7 @@ export function defineIdentityBroker(config: IdentityBrokerConfig) {
         codeExpiresAt: now + CODE_TTL_MS,
         now,
       });
-      if (!completed.ok) {
+      if (!completed) {
         return authorizationError({
           ...back,
           error: "access_denied",
@@ -562,7 +533,6 @@ export function defineIdentityBroker(config: IdentityBrokerConfig) {
       });
       http.route({ path: path("/.well-known/jwks.json"), method: "GET", handler: jwks });
       http.route({ path: path("/authorize"), method: "GET", handler: authorize });
-      http.route({ path: path("/authorize"), method: "POST", handler: authorize });
       http.route({ path: path("/register"), method: "POST", handler: register });
       http.route({ pathPrefix: registerPrefix, method: "DELETE", handler: unregister });
       http.route({ path: path("/token"), method: "POST", handler: token });

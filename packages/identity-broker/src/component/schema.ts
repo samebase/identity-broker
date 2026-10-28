@@ -32,7 +32,6 @@ export const vUpstreamIdentity = object({
 
 /** The fields every authorization request carries from `/authorize` until it is deleted. */
 const authRequestFields = {
-  requestId: string(),
   appId: string(),
   clientId: string(),
   redirectUri: string(),
@@ -43,10 +42,8 @@ const authRequestFields = {
   expiresAt: number(),
 };
 
-export const vAuthRequest = union(
-  // Stored by /authorize before the redirect to the connector.
-  object({ status: literal("pending"), ...authRequestFields }),
-  // Redirected to an OAuth or OIDC connector; its callback claims the request by the state hash.
+const vAuthRequest = union(
+  // Stored by /authorize as it redirects to the connector; its callback claims it by the state hash.
   object({
     status: literal("upstream"),
     ...authRequestFields,
@@ -56,11 +53,13 @@ export const vAuthRequest = union(
     upstreamNonce: optional(string()),
   }),
   // The connector callback arrived and the code exchange is running; a replay finds this and stops.
-  object({ status: literal("claimed"), ...authRequestFields, connector: string() }),
-  // The connector attested the identity; the authorization code points here until it is exchanged.
+  object({ status: literal("claimed"), ...authRequestFields }),
+  // The connector attested the identity. `codeHash` is the SHA-256 hex of the authorization code,
+  // and `expiresAt` is the code's expiry: the token endpoint deletes the request as it redeems it.
   object({
     status: literal("completed"),
     ...authRequestFields,
+    codeHash: string(),
     identity: vUpstreamIdentity,
   }),
 );
@@ -98,17 +97,7 @@ export default defineSchema({
     .index("by_deployment_type", ["deploymentType"]),
 
   authRequests: defineTable(vAuthRequest)
-    .index("by_request_id", ["requestId"])
     .index("by_upstream_state_hash", ["upstreamStateHash"])
-    .index("by_expires_at", ["expiresAt"]),
-
-  authorizationCodes: defineTable({
-    codeHash: string(),
-    authRequestId: v.id("authRequests"),
-    clientId: string(),
-    expiresAt: number(),
-    usedAt: optional(number()),
-  })
     .index("by_code_hash", ["codeHash"])
     .index("by_expires_at", ["expiresAt"]),
 

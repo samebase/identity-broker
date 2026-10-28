@@ -82,7 +82,7 @@ describe("authorize", () => {
     const target = validateAuthorizeTarget(params);
     expect(target.ok).toBe(true);
     if (!target.ok) return;
-    const rest = validateAuthorizeRest(params, target.value);
+    const rest = validateAuthorizeRest(params);
     expect(rest.ok).toBe(true);
     if (rest.ok) {
       expect(rest.value.scopes).toEqual(["openid", "email"]);
@@ -102,41 +102,33 @@ describe("authorize", () => {
   });
 
   test("errors name the OAuth error code", () => {
-    const target = { clientId: "cl_1", redirectUri: base.redirect_uri };
-    const noOpenid = validateAuthorizeRest(
-      new URLSearchParams({ ...base, scope: "email" }),
-      target,
-    );
+    const noOpenid = validateAuthorizeRest(new URLSearchParams({ ...base, scope: "email" }));
     expect(noOpenid.ok).toBe(false);
     if (!noOpenid.ok) expect(noOpenid.error).toBe("invalid_scope");
-    const token = validateAuthorizeRest(
-      new URLSearchParams({ ...base, response_type: "token" }),
-      target,
-    );
+    const token = validateAuthorizeRest(new URLSearchParams({ ...base, response_type: "token" }));
     if (!token.ok) expect(token.error).toBe("unsupported_response_type");
     const plain = validateAuthorizeRest(
       new URLSearchParams({ ...base, code_challenge_method: "plain" }),
-      target,
     );
     expect(plain.ok).toBe(false);
     const noPkce = new URLSearchParams(base);
     noPkce.delete("code_challenge");
-    expect(validateAuthorizeRest(noPkce, target).ok).toBe(false);
-    expect(
-      validateAuthorizeRest(new URLSearchParams({ ...base, prompt: "none" }), target),
-    ).toMatchObject({ ok: false, error: "login_required" });
+    expect(validateAuthorizeRest(noPkce).ok).toBe(false);
+    expect(validateAuthorizeRest(new URLSearchParams({ ...base, prompt: "none" }))).toMatchObject({
+      ok: false,
+      error: "login_required",
+    });
     for (const prompt of ["login", "consent", "none login"]) {
-      expect(validateAuthorizeRest(new URLSearchParams({ ...base, prompt }), target)).toMatchObject(
-        {
-          ok: false,
-          error: "invalid_request",
-          description: "prompt value not supported",
-        },
-      );
+      expect(validateAuthorizeRest(new URLSearchParams({ ...base, prompt }))).toMatchObject({
+        ok: false,
+        error: "invalid_request",
+        description: "prompt value not supported",
+      });
     }
-    expect(
-      validateAuthorizeRest(new URLSearchParams({ ...base, max_age: "0" }), target),
-    ).toMatchObject({ ok: false, error: "invalid_request" });
+    expect(validateAuthorizeRest(new URLSearchParams({ ...base, max_age: "0" }))).toMatchObject({
+      ok: false,
+      error: "invalid_request",
+    });
   });
 });
 

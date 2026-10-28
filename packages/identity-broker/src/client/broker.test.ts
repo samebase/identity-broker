@@ -630,13 +630,15 @@ describe("cleanup", () => {
       createdAt: now - 400 * 86_400_000,
     });
     await h.t.mutation(api.authRequests.create, {
-      requestId: "r-old",
       appId: "a",
       clientId: "prod-old",
       redirectUri: REDIRECT_URI,
       scope: "openid",
       codeChallenge: "c",
       expiresAt: now - 1,
+      connector: "fake",
+      upstreamStateHash: "old",
+      upstreamCodeVerifier: "v",
     });
     await h.t.mutation(api.signIns.record, {
       appId: "a",
@@ -652,7 +654,6 @@ describe("cleanup", () => {
       await h.t.mutation(api.lifecycle.cleanup, { now, signInRetentionMs: 90 * 86_400_000 }),
     ).toEqual({
       authRequests: 1,
-      authorizationCodes: 0,
       previewClients: 0,
       signIns: 1,
     });
@@ -666,7 +667,6 @@ describe("cleanup", () => {
       }),
     ).toEqual({
       authRequests: 0,
-      authorizationCodes: 0,
       previewClients: 1,
       signIns: 0,
     });
@@ -718,27 +718,33 @@ describe("cleanup", () => {
     vi.useFakeTimers();
     const now = Date.now();
     const request = {
-      status: "pending",
+      status: "upstream",
       appId: "a",
       clientId: "c",
       redirectUri: REDIRECT_URI,
       scope: "openid",
       codeChallenge: "c",
+      connector: "fake",
+      upstreamCodeVerifier: "v",
     } as const;
     await h.t.run(async (ctx) => {
       // 0.4.0 ran the first batch and at most 50 continuations, 200 rows each.
       for (let row = 0; row < 51 * 200 + 1; row++) {
         await ctx.db.insert("authRequests", {
           ...request,
-          requestId: `r-${row}`,
+          upstreamStateHash: `r-${row}`,
           expiresAt: now - 1,
         });
       }
-      await ctx.db.insert("authRequests", { ...request, requestId: "live", expiresAt: now + 1 });
+      await ctx.db.insert("authRequests", {
+        ...request,
+        upstreamStateHash: "live",
+        expiresAt: now + 1,
+      });
     });
     await h.t.mutation(api.lifecycle.cleanup, { now, signInRetentionMs: 90 * 86_400_000 });
     await h.t.finishAllScheduledFunctions(vi.runAllTimers);
     const left = await h.t.run(async (ctx) => await ctx.db.query("authRequests").collect());
-    expect(left.map((row) => row.requestId)).toEqual(["live"]);
+    expect(left.map((row) => row.status === "upstream" && row.upstreamStateHash)).toEqual(["live"]);
   });
 });

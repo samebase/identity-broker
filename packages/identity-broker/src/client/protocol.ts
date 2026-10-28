@@ -184,8 +184,6 @@ export function validateRegistration(payload: unknown): Validation<RegistrationI
 }
 
 export type AuthorizeInput = {
-  clientId: string;
-  redirectUri: string;
   scopes: string[];
   state: string | undefined;
   nonce: string | undefined;
@@ -217,10 +215,7 @@ export function validateAuthorizeTarget(
   return { ok: true, value: { clientId, redirectUri } };
 }
 
-export function validateAuthorizeRest(
-  params: URLSearchParams,
-  target: { clientId: string; redirectUri: string },
-): Validation<AuthorizeInput> {
+export function validateAuthorizeRest(params: URLSearchParams): Validation<AuthorizeInput> {
   if (params.get("response_type") !== "code") {
     return invalid(400, "unsupported_response_type", 'response_type must be "code".');
   }
@@ -263,8 +258,6 @@ export function validateAuthorizeRest(
   return {
     ok: true,
     value: {
-      clientId: target.clientId,
-      redirectUri: target.redirectUri,
       scopes,
       state,
       nonce,
