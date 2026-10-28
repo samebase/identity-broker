@@ -1,19 +1,12 @@
-# Publishes the chosen package when its package.json version is not on npm yet, with provenance
-# through npm trusted publishing (the npm trusted publisher of each package names this file). CI runs
-# first for the same commit. The tag <name>@<version> records a published version.
+# Publishes each package whose package.json version is not on npm yet, on every push to main, with
+# provenance through npm trusted publishing (the npm trusted publisher of each package names this
+# file). CI runs first for the same commit. The tag <name>@<version> records a published version.
+# A merge that bumps no version publishes nothing.
 name: Release
 
-# A run is manual and publishes one package.
 on:
-  workflow_dispatch:
-    inputs:
-      package:
-        description: The package to publish
-        required: true
-        type: choice
-        options:
-          - "@samebase/identity-broker"
-          - "@samebase/alchemy-identity-hub"
+  push:
+    branches: [main]
 
 concurrency:
   group: release
@@ -29,15 +22,19 @@ jobs:
       contents: read
 
   publish:
-    name: publish
+    name: publish ${{ matrix.package }}
     needs: ci
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
       contents: write
       id-token: write
+    strategy:
+      fail-fast: false
+      matrix:
+        package: [packages/identity-broker, packages/alchemy-identity-hub]
     env:
-      PACKAGE: ${{ inputs.package }}
+      PACKAGE_DIR: ${{ matrix.package }}
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -58,19 +55,9 @@ jobs:
       - name: Read the package version
         id: version
         run: |
-          case "$PACKAGE" in
-            "@samebase/identity-broker") dir=packages/identity-broker ;;
-            "@samebase/alchemy-identity-hub") dir=packages/alchemy-identity-hub ;;
-            *) echo "Unknown package $PACKAGE" >&2; exit 1 ;;
-          esac
-          name=$(node -p "require('./$dir/package.json').name")
-          if [ "$name" != "$PACKAGE" ]; then
-            echo "$dir/package.json names $name, not $PACKAGE" >&2
-            exit 1
-          fi
-          version=$(node -p "require('./$dir/package.json').version")
+          name=$(node -p "require('./$PACKAGE_DIR/package.json').name")
+          version=$(node -p "require('./$PACKAGE_DIR/package.json').version")
           tag="$name@$version"
-          echo "dir=$dir" >> "$GITHUB_OUTPUT"
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           if npm view "$tag" version >/dev/null 2>&1; then
             echo "publish=false" >> "$GITHUB_OUTPUT"
@@ -86,8 +73,6 @@ jobs:
       # pnpm pack replaces catalog: versions with real ones.
       - name: Publish the release
         if: steps.version.outputs.publish == 'true'
-        env:
-          PACKAGE_DIR: ${{ steps.version.outputs.dir }}
         run: |
           tarball=$(cd "$PACKAGE_DIR" && pnpm pack --pack-destination "$RUNNER_TEMP" | tail -n 1)
           npx --yes npm@11.21.0 publish "$tarball" --access public --provenance
