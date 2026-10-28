@@ -18,13 +18,7 @@ import type {
 } from "./connectors/types.js";
 import { finishUpstream, startUpstream } from "./connectors/upstream.js";
 import { errorPage } from "./html.js";
-import {
-  signAccessToken,
-  signIdToken,
-  TOKEN_TTL_SECONDS,
-  verifyAccessToken,
-  type IdentityClaims,
-} from "./jwt.js";
+import { signIdToken, type IdentityClaims } from "./jwt.js";
 import { parseKeySet, publicJwks, SIGNING_ALGORITHM, type KeySet } from "./keys.js";
 import {
   hostAllowed,
@@ -94,13 +88,12 @@ export function defineIdentityBroker(config: IdentityBrokerConfig) {
   const callbackUrl = (connector: OauthConnector | OidcConnector) =>
     `${issuer}/connectors/${connector.name}/callback`;
 
-  const metadata = () => ({
+  /** OIDC Discovery metadata: the required members and the ones whose default differs. */
+  const metadata = {
     issuer,
     authorization_endpoint: `${issuer}/authorize`,
     token_endpoint: `${issuer}/token`,
-    userinfo_endpoint: `${issuer}/userinfo`,
     jwks_uri: `${issuer}/.well-known/jwks.json`,
-    registration_endpoint: `${issuer}/register`,
     scopes_supported: SCOPES,
     response_types_supported: ["code"],
     response_modes_supported: ["query"],
@@ -109,27 +102,12 @@ export function defineIdentityBroker(config: IdentityBrokerConfig) {
     id_token_signing_alg_values_supported: [SIGNING_ALGORITHM],
     token_endpoint_auth_methods_supported: ["client_secret_post"],
     code_challenge_methods_supported: ["S256"],
-    claims_supported: [
-      "sub",
-      "iss",
-      "aud",
-      "exp",
-      "iat",
-      "nonce",
-      "email",
-      "email_verified",
-      "name",
-      "picture",
-      "connector",
-    ],
     authorization_response_iss_parameter_supported: true,
-    claims_parameter_supported: false,
-    request_parameter_supported: false,
     request_uri_parameter_supported: false,
-  });
+  };
 
   const discovery = httpActionGeneric(async () =>
-    json(metadata(), 200, { "Cache-Control": "public, max-age=300" }),
+    json(metadata, 200, { "Cache-Control": "public, max-age=300" }),
   );
 
   const jwks = httpActionGeneric(async () =>
@@ -421,7 +399,7 @@ export function defineIdentityBroker(config: IdentityBrokerConfig) {
       upstreamId: exchange.identity.upstreamId,
       salt: keys.pairwiseSalt,
     });
-    // Claims follow the granted scopes (OIDC Core 5.4); userinfo reads them from the access token.
+    // Claims follow the granted scopes (OIDC Core 5.4).
     const scopes = exchange.scope.split(" ");
     const claims: IdentityClaims = { sub, connector: exchange.identity.connector };
     if (scopes.includes("email") && exchange.identity.email !== undefined) {
@@ -434,42 +412,20 @@ export function defineIdentityBroker(config: IdentityBrokerConfig) {
     if (scopes.includes("profile") && exchange.identity.picture !== undefined) {
       claims.picture = exchange.identity.picture;
     }
-    const [idToken, accessToken] = await Promise.all([
-      signIdToken({
+    return json({
+      // Required by RFC 6749 section 5.1; it authorizes nothing, since the broker has no
+      // protected resource such as a UserInfo endpoint.
+      access_token: randomToken(32),
+      token_type: "Bearer",
+      id_token: await signIdToken({
         keySet: keys,
         issuer,
         clientId: client.clientId,
         claims,
         nonce: exchange.nonce,
       }),
-      signAccessToken({ keySet: keys, issuer, clientId: client.clientId, claims }),
-    ]);
-    return json({
-      access_token: accessToken,
-      token_type: "Bearer",
-      expires_in: TOKEN_TTL_SECONDS,
-      id_token: idToken,
       scope: exchange.scope,
     });
-  });
-
-  const userinfo = httpActionGeneric(async (_ctx, request) => {
-    const bearer = readBearerToken(request.headers.get("authorization"));
-    const claims =
-      bearer === null ? null : await verifyAccessToken({ keySet: keySet(), issuer, token: bearer });
-    if (claims === null) {
-      return json(
-        {
-          error: "invalid_token",
-          error_description: "The access token is missing, invalid or expired.",
-        },
-        401,
-        {
-          "WWW-Authenticate": 'Bearer error="invalid_token"',
-        },
-      );
-    }
-    return json(claims);
   });
 
   return {
@@ -480,18 +436,11 @@ export function defineIdentityBroker(config: IdentityBrokerConfig) {
         method: "GET",
         handler: discovery,
       });
-      http.route({
-        path: `/.well-known/oauth-authorization-server${prefix}`,
-        method: "GET",
-        handler: discovery,
-      });
       http.route({ path: path("/.well-known/jwks.json"), method: "GET", handler: jwks });
       http.route({ path: path("/authorize"), method: "GET", handler: authorize });
       http.route({ path: path("/register"), method: "POST", handler: register });
       http.route({ pathPrefix: registerPrefix, method: "DELETE", handler: unregister });
       http.route({ path: path("/token"), method: "POST", handler: token });
-      http.route({ path: path("/userinfo"), method: "GET", handler: userinfo });
-      http.route({ path: path("/userinfo"), method: "POST", handler: userinfo });
       for (const connector of connectors.values()) {
         http.route({
           path: path(`/connectors/${connector.name}/callback`),

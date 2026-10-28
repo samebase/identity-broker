@@ -76,42 +76,20 @@ async function exchange(
 }
 
 describe("metadata", () => {
-  test("both discovery documents and the JWKS", async () => {
+  test("the discovery document and the JWKS", async () => {
     const h = await createHarness({ connectors: [fakeUpstream().connector] });
-    for (const path of [
-      "/.well-known/openid-configuration",
-      "/.well-known/oauth-authorization-server",
-    ]) {
-      const response = await h.fetchBroker(`${ISSUER}${path}`);
-      expect(response.status).toBe(200);
-      const metadata = await response.json();
-      expect(metadata.issuer).toBe(ISSUER);
-      expect(metadata.jwks_uri).toBe(`${ISSUER}/.well-known/jwks.json`);
-      expect(metadata.subject_types_supported).toEqual(["pairwise"]);
-      expect(metadata.code_challenge_methods_supported).toEqual(["S256"]);
-      expect(metadata.authorization_response_iss_parameter_supported).toBe(true);
-    }
+    const response = await h.fetchBroker(`${ISSUER}/.well-known/openid-configuration`);
+    expect(response.status).toBe(200);
+    const metadata = await response.json();
+    expect(metadata.issuer).toBe(ISSUER);
+    expect(metadata.jwks_uri).toBe(`${ISSUER}/.well-known/jwks.json`);
+    expect(metadata.subject_types_supported).toEqual(["pairwise"]);
+    expect(metadata.code_challenge_methods_supported).toEqual(["S256"]);
+    expect(metadata.token_endpoint_auth_methods_supported).toEqual(["client_secret_post"]);
+    expect(metadata.authorization_response_iss_parameter_supported).toBe(true);
     const jwks = await (await h.fetchBroker(`${ISSUER}/.well-known/jwks.json`)).json();
     expect(jwks.keys).toHaveLength(1);
     expect(jwks.keys[0].d).toBeUndefined();
-  });
-
-  test("a path issuer serves the RFC 8414 location with the path after the segment", async () => {
-    const h = await createHarness({
-      connectors: [fakeUpstream().connector],
-      issuer: "https://samebase.test/identity",
-    });
-    expect(
-      (await h.fetchBroker("https://samebase.test/identity/.well-known/openid-configuration"))
-        .status,
-    ).toBe(200);
-    expect(
-      (await h.fetchBroker("https://samebase.test/.well-known/oauth-authorization-server/identity"))
-        .status,
-    ).toBe(200);
-    expect(
-      (await h.fetchBroker("https://samebase.test/.well-known/openid-configuration")).status,
-    ).toBe(404);
   });
 });
 
@@ -250,6 +228,7 @@ describe("authorization code flow with an OAuth connector", () => {
     expect(tokens.status).toBe(200);
     const body = await tokens.json();
     expect(body.token_type).toBe("Bearer");
+    expect(typeof body.access_token).toBe("string");
     expect(body.scope).toBe("openid email profile");
     const claims = decodeJwt(body.id_token);
     expect(claims.iss).toBe(ISSUER);
@@ -259,12 +238,6 @@ describe("authorization code flow with an OAuth connector", () => {
     expect(claims["email_verified"]).toBe(true);
     expect(claims["connector"]).toBe("fake");
     expect(claims).not.toHaveProperty("connector_account_id");
-
-    const userinfo = await h.fetchBroker(`${ISSUER}/userinfo`, {
-      headers: { Authorization: `Bearer ${body.access_token}` },
-    });
-    expect(userinfo.status).toBe(200);
-    expect((await userinfo.json()).sub).toBe(claims.sub);
 
     // The subject is pairwise per app: another app of the same user gets another subject.
     const other = await h.registerClient("other");
@@ -505,18 +478,11 @@ describe("authorization code flow with an OAuth connector", () => {
       const code = new URL(back.headers.get("location") ?? "").searchParams.get("code") ?? "";
       const tokens = await (await exchange(h, { code, clientId, clientSecret, verifier })).json();
       expect(tokens.scope).toBe(granted);
-      const userinfo = await (
-        await h.fetchBroker(`${ISSUER}/userinfo`, {
-          headers: { Authorization: `Bearer ${tokens.access_token}` },
-        })
-      ).json();
-      for (const claims of [decodeJwt(tokens.id_token), userinfo]) {
-        expect(
-          Object.keys(claims).filter((name) =>
-            ["email", "email_verified", "name", "picture"].includes(name),
-          ),
-        ).toEqual(claimed);
-      }
+      expect(
+        Object.keys(decodeJwt(tokens.id_token)).filter((name) =>
+          ["email", "email_verified", "name", "picture"].includes(name),
+        ),
+      ).toEqual(claimed);
     }
   });
 

@@ -1,6 +1,6 @@
 /// <reference types="vite-plus/client" />
-// openid-client, an OpenID-certified relying party, against the broker: discovery, the code flow
-// with PKCE and nonce, userinfo; jose checks the id_token signature against the published JWKS.
+// openid-client, an OpenID-certified relying party, against the broker: discovery and the code flow
+// with PKCE and nonce; jose checks the id_token signature against the published JWKS.
 import { createLocalJWKSet, jwtVerify } from "jose";
 import * as client from "openid-client";
 import { afterEach, expect, test, vi } from "vite-plus/test";
@@ -80,7 +80,7 @@ async function signIn(options: { keySet?: KeySet } = {}) {
     expectedNonce: nonce,
     idTokenExpected: true,
   });
-  return { h, config, clientId, nonce, tokens };
+  return { h, clientId, nonce, tokens };
 }
 
 /** Verifies an id_token's signature against the JWKS that `h` publishes. */
@@ -94,7 +94,7 @@ async function verifyWithJwks(h: Harness, idToken: string, clientId: string) {
 }
 
 test("openid-client completes a sign-in through the broker", async () => {
-  const { h, config, clientId, nonce, tokens } = await signIn();
+  const { h, clientId, nonce, tokens } = await signIn();
   const claims = tokens.claims();
   expect(claims?.iss).toBe(ISSUER);
   expect(claims?.aud).toBe(clientId);
@@ -103,10 +103,6 @@ test("openid-client completes a sign-in through the broker", async () => {
   // openid-client does not check the signature of an id_token from the token endpoint.
   const idToken = tokens.id_token ?? "";
   expect((await verifyWithJwks(h, idToken, clientId)).payload.sub).toBe(claims?.sub);
-
-  const userinfo = await client.fetchUserInfo(config, tokens.access_token, claims?.sub ?? "");
-  expect(userinfo.sub).toBe(claims?.sub);
-  expect(userinfo["email"]).toBe("octo@example.com");
 });
 
 test("a token signed before a rotation verifies against the JWKS after it", async () => {
