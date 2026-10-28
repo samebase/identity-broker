@@ -13,8 +13,13 @@ export function json(body: unknown, status = 200, headers: Record<string, string
 }
 
 /** An OAuth error body (RFC 6749 section 5.2), for the endpoints that answer the client directly. */
-export function oauthError(status: number, error: string, description: string): Response {
-  return json({ error, error_description: description }, status);
+export function oauthError(
+  status: number,
+  error: string,
+  description: string,
+  headers: Record<string, string> = {},
+): Response {
+  return json({ error, error_description: description }, status, headers);
 }
 
 export function redirect(location: string): Response {

@@ -20,7 +20,7 @@ overrides:
   vitest: "catalog:"
   # @effect/platform-node 4.0.4 accepts @effect/platform-node-shared ^4.0.4, but 4.0.5 imports
   # effect/Path APIs that the effect 4.0.4 here does not have.
-  "@effect/platform-node-shared": 4.0.4
+  "@effect/platform-node@4.0.4>@effect/platform-node-shared": "4.0.4"
 
 peerDependencyRules:
   allowAny:

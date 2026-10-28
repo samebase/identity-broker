@@ -84,6 +84,15 @@ export async function rotateKeySet(keySet: KeySet, now = Date.now()): Promise<Ke
   };
 }
 
+/**
+ * Rotation after a key compromise: a new current key and no retired keys, so every token signed
+ * before stops verifying at once. The salt never changes.
+ */
+export async function rotateKeySetWithoutOverlap(keySet: KeySet): Promise<KeySet> {
+  const key = await freshKey();
+  return { version: 1, pairwiseSalt: keySet.pairwiseSalt, keys: [{ status: "current", ...key }] };
+}
+
 function isJwk(value: unknown): value is JWK {
   return (
     typeof value === "object" &&

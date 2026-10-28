@@ -23,7 +23,7 @@ const STYLE = `
   .muted { color: #555; }
 `;
 
-export function page(title: string, body: string): Response {
+export function page(title: string, body: string, status = 200): Response {
   const html = `<!doctype html>
 <html lang="en">
 <head>
@@ -36,7 +36,7 @@ export function page(title: string, body: string): Response {
 <body><main>${body}</main></body>
 </html>`;
   return new Response(html, {
-    status: 200,
+    status,
     headers: {
       "Content-Type": "text/html; charset=utf-8",
       "Cache-Control": "no-store",
@@ -52,6 +52,8 @@ export function page(title: string, body: string): Response {
 export function chooserPage(args: {
   appName: string;
   firstParty: boolean;
+  /** The granted scopes: the consent names only what they release. */
+  scopes: string[];
   connectors: Array<{ name: string; label: string; href: string }>;
   denyHref: string;
 }): Response {
@@ -61,9 +63,18 @@ export function chooserPage(args: {
         `<a class="button" href="${escape(connector.href)}">Continue with ${escape(connector.label)}</a>`,
     )
     .join("\n");
+  const released = [
+    "a stable id",
+    ...(args.scopes.includes("profile") ? ["your name and picture"] : []),
+    ...(args.scopes.includes("email") ? ["your verified email address"] : []),
+  ];
+  const list =
+    released.length <= 2
+      ? released.join(" and ")
+      : `${released.slice(0, -1).join(", ")}, and ${released.slice(-1).join("")}`;
   const consent = args.firstParty
     ? ""
-    : `<p class="muted">${escape(args.appName)} will receive your identity from the provider you choose: a stable id, your name, and your verified email address.</p>`;
+    : `<p class="muted">${escape(args.appName)} will receive your identity from the provider you choose: ${list}.</p>`;
   const deny = args.firstParty
     ? ""
     : `<p><a href="${escape(args.denyHref)}">Cancel and return to ${escape(args.appName)}</a></p>`;
@@ -78,6 +89,7 @@ export function emailAddressPage(args: {
   action: string;
   requestId: string;
   error?: string;
+  status?: number;
 }): Response {
   const error = args.error === undefined ? "" : `<p class="error">${escape(args.error)}</p>`;
   return page(
@@ -89,6 +101,7 @@ export function emailAddressPage(args: {
 <input type="email" name="email" required autocomplete="email" autofocus placeholder="you@example.com">
 <button type="submit">Send code</button>
 </form>`,
+    args.status,
   );
 }
 
@@ -98,6 +111,7 @@ export function emailCodePage(args: {
   requestId: string;
   email: string;
   error?: string;
+  status?: number;
 }): Response {
   const error = args.error === undefined ? "" : `<p class="error">${escape(args.error)}</p>`;
   return page(
@@ -109,10 +123,10 @@ export function emailCodePage(args: {
 <input type="text" name="code" inputmode="numeric" pattern="[0-9]{6}" required autocomplete="one-time-code" autofocus placeholder="000000">
 <button type="submit">Continue</button>
 </form>`,
+    args.status,
   );
 }
 
 export function errorPage(title: string, message: string, status = 400): Response {
-  const response = page(title, `<h1>${escape(title)}</h1><p>${escape(message)}</p>`);
-  return new Response(response.body, { status, headers: response.headers });
+  return page(title, `<h1>${escape(title)}</h1><p>${escape(message)}</p>`, status);
 }

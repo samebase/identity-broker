@@ -65,12 +65,23 @@ export default http;
 ```ts
 // convex/identityBroker.ts: administration for `npx convex run`
 import { broker } from "./http";
-export const { createApp, mintRegistrationToken, deleteApp, listApps, listClients, cleanup } =
-  broker.admin();
+export const {
+  createApp,
+  mintRegistrationToken,
+  listRegistrationTokens,
+  revokeRegistrationToken,
+  setAllowedCallbackHosts,
+  deleteClient,
+  deleteApp,
+  listApps,
+  listClients,
+  cleanup,
+} = broker.admin();
 ```
 
 Keys: `npx identity-broker keys` prints the value for `IDENTITY_BROKER_KEYS`; `keys --rotate`
-advances it.
+advances it, and `keys --rotate --no-overlap` replaces a compromised key at once. Back up the key
+set: its salt makes every `sub`. `parseKeySet` checks a value before a deploy.
 
 ## Register an app's deployments
 

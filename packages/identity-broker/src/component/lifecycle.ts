@@ -1,5 +1,6 @@
 import { v } from "convex/values";
 import { mutation } from "./_generated/server";
+import { EMAIL_SEND_WINDOW_MS } from "./authRequests";
 
 const { number, object } = v;
 
@@ -7,17 +8,20 @@ const { number, object } = v;
 const BATCH = 200;
 
 /**
- * Deletes what has run out: expired requests and codes, preview clients nobody used for
- * `previewClientMaxAgeMs`, and audit rows older than `signInRetentionMs`. The host calls this from a
- * cron; production and development clients are never touched.
+ * Deletes what has run out: expired requests, codes and registration tokens, preview clients
+ * nobody used for `previewClientMaxAgeMs`, audit rows older than `signInRetentionMs`, and email send
+ * rows outside the send window. The host calls this from a cron; production and development clients
+ * are never touched.
  */
 export const cleanup = mutation({
   args: { now: number(), previewClientMaxAgeMs: number(), signInRetentionMs: number() },
   returns: object({
     authRequests: number(),
     authorizationCodes: number(),
+    registrationTokens: number(),
     previewClients: number(),
     signIns: number(),
+    emailSends: number(),
   }),
   handler: async (ctx, args) => {
     const requests = await ctx.db
@@ -34,6 +38,14 @@ export const cleanup = mutation({
       .take(BATCH);
     for (const code of codes) {
       await ctx.db.delete("authorizationCodes", code._id);
+    }
+
+    const tokens = await ctx.db
+      .query("registrationTokens")
+      .withIndex("by_expires_at", (q) => q.lt("expiresAt", args.now))
+      .take(BATCH);
+    for (const token of tokens) {
+      await ctx.db.delete("registrationTokens", token._id);
     }
 
     const previewCutoff = args.now - args.previewClientMaxAgeMs;
@@ -57,11 +69,21 @@ export const cleanup = mutation({
       await ctx.db.delete("signIns", signIn._id);
     }
 
+    const emailSends = await ctx.db
+      .query("emailSends")
+      .withIndex("by_at", (q) => q.lt("at", args.now - EMAIL_SEND_WINDOW_MS))
+      .take(BATCH);
+    for (const emailSend of emailSends) {
+      await ctx.db.delete("emailSends", emailSend._id);
+    }
+
     return {
       authRequests: requests.length,
       authorizationCodes: codes.length,
+      registrationTokens: tokens.length,
       previewClients: previewClients.length,
       signIns: signIns.length,
+      emailSends: emailSends.length,
     };
   },
 });

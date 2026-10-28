@@ -89,7 +89,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
       claimUpstream: FunctionReference<
         "mutation",
         "internal",
-        { now: number; upstreamStateHash: string },
+        { connector: string; now: number; upstreamStateHash: string },
         | {
             connector: string;
             freshLogin: boolean;
@@ -147,6 +147,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
           requestId: string;
           scope: string;
           state?: string;
+          txnCookieHash?: string;
         },
         null,
         Name
@@ -197,6 +198,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
             scope: string;
             state?: string;
             status: "pending";
+            txnCookieHash?: string;
           }
         | {
             appId: string;
@@ -212,6 +214,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
             scope: string;
             state?: string;
             status: "upstream";
+            txnCookieHash?: string;
             upstreamCodeVerifier: string;
             upstreamNonce?: string;
             upstreamStateHash: string;
@@ -230,6 +233,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
             scope: string;
             state?: string;
             status: "claimed";
+            txnCookieHash?: string;
           }
         | {
             appId: string;
@@ -241,6 +245,8 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
             emailAttempts: number;
             emailCodeExpiresAt: number;
             emailCodeHash: string;
+            emailLastSentAt: number;
+            emailSends: number;
             expiresAt: number;
             freshLogin: boolean;
             nonce?: string;
@@ -249,6 +255,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
             scope: string;
             state?: string;
             status: "emailSent";
+            txnCookieHash?: string;
           }
         | {
             appId: string;
@@ -272,6 +279,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
             scope: string;
             state?: string;
             status: "completed";
+            txnCookieHash?: string;
           }
         | null,
         Name
@@ -284,12 +292,21 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
           email: string;
           emailCodeExpiresAt: number;
           emailCodeHash: string;
+          emailHash: string;
+          maxAttempts: number;
           now: number;
           requestId: string;
         },
         | { ok: true; redirectUri: string; state?: string }
         | {
-            error: "expired" | "wrong_status";
+            error:
+              | "expired"
+              | "wrong_status"
+              | "locked"
+              | "too_soon"
+              | "request_limit"
+              | "address_limit"
+              | "global_limit";
             ok: false;
             redirectUri: string;
             state?: string;
@@ -419,13 +436,22 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         {
           authRequests: number;
           authorizationCodes: number;
+          emailSends: number;
           previewClients: number;
+          registrationTokens: number;
           signIns: number;
         },
         Name
       >;
     };
     registration: {
+      listTokens: FunctionReference<
+        "query",
+        "internal",
+        { appId: string },
+        Array<{ createdAt: number; expiresAt: number; tokenHash: string }>,
+        Name
+      >;
       mintToken: FunctionReference<
         "mutation",
         "internal",
@@ -448,6 +474,13 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
           firstParty: boolean;
           name: string;
         } | null,
+        Name
+      >;
+      revokeToken: FunctionReference<
+        "mutation",
+        "internal",
+        { tokenHash: string },
+        null,
         Name
       >;
     };

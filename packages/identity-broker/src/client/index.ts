@@ -58,7 +58,7 @@ export type {
 export { github } from "./connectors/github.js";
 export { google } from "./connectors/google.js";
 export { email } from "./connectors/email.js";
-export { createKeySet, rotateKeySet, type KeySet } from "./keys.js";
+export { createKeySet, parseKeySet, rotateKeySet, type KeySet } from "./keys.js";
 
 export type IdentityBrokerConfig = {
   /** `components.identityBroker` of the host app. */
@@ -76,6 +76,8 @@ const AUTH_REQUEST_TTL_MS = 10 * 60 * 1000;
 const CODE_TTL_MS = 60 * 1000;
 const EMAIL_CODE_TTL_MS = 10 * 60 * 1000;
 const EMAIL_MAX_ATTEMPTS = 5;
+/** The scopes the broker grants; any other requested scope is dropped. */
+const SCOPES = ["openid", "email", "profile"];
 const REGISTRATION_TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 /** Lifecycle values the host's cron passes to `cleanup`. */
 export const PREVIEW_CLIENT_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
@@ -91,6 +93,9 @@ export function defineIdentityBroker(config: IdentityBrokerConfig) {
   const issuer = issuerUrl.href.replace(/\/$/, "");
   const prefix = issuerUrl.pathname.replace(/\/$/, "");
   const path = (suffix: string) => `${prefix}${suffix}`;
+  /** Binds the chooser's links to its browser. `__Host-` needs Path=/, so a path issuer uses a plain name. */
+  const txnCookieName = prefix === "" ? "__Host-broker_txn" : "broker_txn";
+  const txnCookieAttributes = `HttpOnly; Secure; SameSite=Lax; Path=${prefix === "" ? "/" : prefix}`;
   const component = config.component;
   const connectors = new Map(config.connectors.map((connector) => [connector.name, connector]));
   if (connectors.size !== config.connectors.length) {
@@ -111,7 +116,7 @@ export function defineIdentityBroker(config: IdentityBrokerConfig) {
     userinfo_endpoint: `${issuer}/userinfo`,
     jwks_uri: `${issuer}/.well-known/jwks.json`,
     registration_endpoint: `${issuer}/register`,
-    scopes_supported: ["openid", "email", "profile"],
+    scopes_supported: SCOPES,
     response_types_supported: ["code"],
     response_modes_supported: ["query"],
     grant_types_supported: ["authorization_code"],
@@ -267,6 +272,16 @@ export function defineIdentityBroker(config: IdentityBrokerConfig) {
       });
     }
     const freshLogin = rest.value.prompt.includes("login") || rest.value.maxAge !== undefined;
+    const scopes = SCOPES.filter((scope) => rest.value.scopes.includes(scope));
+    // A first-party app may skip the chooser: the one it named, or the only one. A third-party app
+    // always gets the page, which doubles as consent (RFC 9700 4.11).
+    const named =
+      rest.value.connector === undefined ? undefined : connectors.get(rest.value.connector);
+    const only = connectors.size === 1 ? [...connectors.values()][0] : undefined;
+    const chosen = app.firstParty ? (named ?? only) : undefined;
+    // The chooser's links work only with this cookie, so a client that fetches the chooser itself
+    // cannot send a user's browser on from it.
+    const txnCookie = randomToken(32);
     const now = Date.now();
     const requestId = randomToken(24);
     await ctx.runMutation(component.authRequests.create, {
@@ -274,35 +289,32 @@ export function defineIdentityBroker(config: IdentityBrokerConfig) {
       appId: app.appId,
       clientId: client.clientId,
       redirectUri: client.redirectUri,
-      scope: rest.value.scopes.join(" "),
+      scope: scopes.join(" "),
       ...(rest.value.state === undefined ? {} : { state: rest.value.state }),
       ...(rest.value.nonce === undefined ? {} : { nonce: rest.value.nonce }),
       codeChallenge: rest.value.codeChallenge,
       freshLogin,
+      ...(chosen === undefined ? { txnCookieHash: await sha256Hex(txnCookie) } : {}),
       createdAt: now,
       expiresAt: now + AUTH_REQUEST_TTL_MS,
     });
-    const stored = {
-      requestId,
-      appId: app.appId,
-      redirectUri: client.redirectUri,
-      state: rest.value.state,
-      freshLogin,
-    };
-    // A first-party app may skip the chooser: the one it named, or the only one. A third-party app
-    // always gets the page, which doubles as consent (RFC 9700 4.11).
-    if (app.firstParty) {
-      const named =
-        rest.value.connector === undefined ? undefined : connectors.get(rest.value.connector);
-      const only = connectors.size === 1 ? [...connectors.values()][0] : undefined;
-      const chosen = named ?? only;
-      if (chosen !== undefined) {
-        return await startConnector(ctx, { connector: chosen, request: stored, appName: app.name });
-      }
+    if (chosen !== undefined) {
+      return await startConnector(ctx, {
+        connector: chosen,
+        request: {
+          requestId,
+          appId: app.appId,
+          redirectUri: client.redirectUri,
+          state: rest.value.state,
+          freshLogin,
+        },
+        appName: app.name,
+      });
     }
-    return chooserPage({
+    const page = chooserPage({
       appName: app.name,
       firstParty: app.firstParty,
+      scopes,
       connectors: [...connectors.values()].map((connector) => ({
         name: connector.name,
         label: connector.label,
@@ -310,6 +322,8 @@ export function defineIdentityBroker(config: IdentityBrokerConfig) {
       })),
       denyHref: `${path("/continue")}?request=${encodeURIComponent(requestId)}&deny=1`,
     });
+    page.headers.append("Set-Cookie", `${txnCookieName}=${txnCookie}; ${txnCookieAttributes}`);
+    return page;
   });
 
   /** A chooser click: start the chosen connector, or abandon the request on deny. */
@@ -322,6 +336,23 @@ export function defineIdentityBroker(config: IdentityBrokerConfig) {
         "Sign-in not found",
         "This sign-in is unknown or finished. Return to the app and try again.",
         404,
+      );
+    }
+    const txnCookie = request.headers
+      .get("cookie")
+      ?.split(";")
+      .map((pair) => pair.trim())
+      .find((pair) => pair.startsWith(`${txnCookieName}=`))
+      ?.slice(txnCookieName.length + 1);
+    if (
+      stored.txnCookieHash === undefined ||
+      txnCookie === undefined ||
+      (await sha256Hex(txnCookie)) !== stored.txnCookieHash
+    ) {
+      return errorPage(
+        "Sign-in not continued",
+        "This sign-in did not start in this browser. Return to the app and try again.",
+        400,
       );
     }
     const back = { redirectUri: stored.redirectUri, issuer, state: stored.state };
@@ -375,6 +406,7 @@ export function defineIdentityBroker(config: IdentityBrokerConfig) {
       const now = Date.now();
       const claim = await ctx.runMutation(component.authRequests.claimUpstream, {
         upstreamStateHash: await sha256Hex(state),
+        connector: connector.name,
         now,
       });
       if (claim.status === "missing") {
@@ -404,14 +436,28 @@ export function defineIdentityBroker(config: IdentityBrokerConfig) {
         });
       } catch (error) {
         await ctx.runMutation(component.authRequests.abandon, { requestId: claim.requestId });
-        if (error instanceof oauth.AuthorizationResponseError) {
+        // The provider's error code picks one fixed answer; nothing the provider wrote is echoed.
+        if (error instanceof oauth.AuthorizationResponseError && error.error === "access_denied") {
           return authorizationError({
             ...back,
-            error: error.error === "access_denied" ? "access_denied" : "server_error",
-            description: `${connector.label} answered ${error.error}.`,
+            error: "access_denied",
+            description: `${connector.label} sign-in was declined.`,
           });
         }
-        console.error(`Connector "${connector.name}" failed`, error);
+        if (
+          error instanceof oauth.AuthorizationResponseError &&
+          error.error === "temporarily_unavailable"
+        ) {
+          return authorizationError({
+            ...back,
+            error: "temporarily_unavailable",
+            description: `${connector.label} is temporarily unavailable.`,
+          });
+        }
+        // Only the class name: provider errors carry token responses and decoded claims.
+        console.error(
+          `Connector "${connector.name}" failed: ${error instanceof Error ? error.constructor.name : typeof error}`,
+        );
         return authorizationError({
           ...back,
           error: "server_error",
@@ -486,27 +532,65 @@ export function defineIdentityBroker(config: IdentityBrokerConfig) {
         requestId,
         connector: emailConnector.name,
         email: address,
+        emailHash: await sha256Hex(address),
         emailCodeHash: await sha256Hex(code),
         emailCodeExpiresAt: now + EMAIL_CODE_TTL_MS,
+        maxAttempts: EMAIL_MAX_ATTEMPTS,
         now,
       });
       if (!started.ok) {
-        return started.error === "not_found"
-          ? errorPage(
+        switch (started.error) {
+          case "not_found":
+            return errorPage(
               "Sign-in not found",
               "This sign-in is unknown. Return to the app and try again.",
               404,
-            )
-          : authorizationError({
+            );
+          case "expired":
+          case "wrong_status":
+            return authorizationError({
               ...back,
               error: "access_denied",
               description: "The sign-in expired.",
             });
+          case "locked":
+            return authorizationError({
+              ...back,
+              error: "access_denied",
+              description: "Too many wrong codes.",
+            });
+          case "too_soon":
+          case "request_limit":
+          case "address_limit":
+          case "global_limit": {
+            // The page the user is on, with one neutral line: nothing says whether the address is
+            // known, and neither the address nor a code is logged.
+            const error =
+              started.error === "too_soon"
+                ? "Wait a minute before asking for another code."
+                : "Too many codes were sent. Try again later.";
+            return stored.status === "emailSent"
+              ? emailCodePage({
+                  appName: app.name,
+                  action,
+                  requestId,
+                  email: stored.email,
+                  error,
+                  status: 429,
+                })
+              : emailAddressPage({ appName: app.name, action, requestId, error, status: 429 });
+          }
+          default:
+            return started satisfies never;
+        }
       }
       try {
         await ctx.runAction(emailConnector.send, { to: address, code, appName: app.name });
       } catch (error) {
-        console.error("Email code delivery failed", error);
+        // Only the class name: a delivery error can carry the address or the code.
+        console.error(
+          `Connector "${emailConnector.name}" could not send a code: ${error instanceof Error ? error.constructor.name : typeof error}`,
+        );
         return errorPage(
           "Email not sent",
           "The code could not be sent. Try again in a moment.",
@@ -662,9 +746,18 @@ export function defineIdentityBroker(config: IdentityBrokerConfig) {
       );
     }
     const params = new URLSearchParams(await request.text());
-    const clientAuth = readClientAuthentication(request.headers.get("authorization"), params);
+    const authorization = request.headers.get("authorization");
+    // RFC 6749 section 5.2: a client that authenticated with the header gets a 401 with a challenge.
+    const challenge: Record<string, string> =
+      authorization === null ? {} : { "WWW-Authenticate": 'Basic realm="token"' };
+    const clientAuth = readClientAuthentication(authorization, params);
     if (!clientAuth.ok) {
-      return oauthError(clientAuth.status, clientAuth.error, clientAuth.description);
+      return oauthError(
+        clientAuth.status,
+        clientAuth.error,
+        clientAuth.description,
+        clientAuth.status === 401 ? challenge : {},
+      );
     }
     const validation = validateTokenRequest(params, clientAuth.value);
     if (!validation.ok) {
@@ -678,7 +771,7 @@ export function defineIdentityBroker(config: IdentityBrokerConfig) {
       client.tokenEndpointAuthMethod !== clientAuth.value.method ||
       client.secretHash !== (await sha256Hex(clientAuth.value.clientSecret))
     ) {
-      return oauthError(401, "invalid_client", "Client authentication failed.");
+      return oauthError(401, "invalid_client", "Client authentication failed.", challenge);
     }
     const now = Date.now();
     const exchange = await ctx.runMutation(component.authRequests.exchangeCode, {
@@ -700,15 +793,17 @@ export function defineIdentityBroker(config: IdentityBrokerConfig) {
       upstreamId: exchange.identity.upstreamId,
       salt: keys.pairwiseSalt,
     });
+    // Claims follow the granted scopes (OIDC Core 5.4); userinfo reads them from the access token.
+    const scopes = exchange.scope.split(" ");
     const claims: IdentityClaims = { sub, connector: exchange.identity.connector };
-    if (exchange.identity.email !== undefined) {
+    if (scopes.includes("email") && exchange.identity.email !== undefined) {
       claims.email = exchange.identity.email;
       claims.email_verified = exchange.identity.emailVerified === true;
     }
-    if (exchange.identity.name !== undefined) {
+    if (scopes.includes("profile") && exchange.identity.name !== undefined) {
       claims.name = exchange.identity.name;
     }
-    if (exchange.identity.picture !== undefined) {
+    if (scopes.includes("profile") && exchange.identity.picture !== undefined) {
       claims.picture = exchange.identity.picture;
     }
     const [idToken, accessToken] = await Promise.all([
@@ -849,6 +944,29 @@ export function defineIdentityBroker(config: IdentityBrokerConfig) {
               appId: args.appId,
               allowedCallbackHosts: args.allowedCallbackHosts,
             });
+            return null;
+          },
+        }),
+        listRegistrationTokens: internalQueryGeneric({
+          args: { appId: string() },
+          handler: async (ctx, args) =>
+            await ctx.runQuery(component.registration.listTokens, { appId: args.appId }),
+        }),
+        revokeRegistrationToken: internalMutationGeneric({
+          args: { tokenHash: string() },
+          returns: v.null(),
+          handler: async (ctx, args) => {
+            await ctx.runMutation(component.registration.revokeToken, {
+              tokenHash: args.tokenHash,
+            });
+            return null;
+          },
+        }),
+        deleteClient: internalMutationGeneric({
+          args: { clientId: string() },
+          returns: v.null(),
+          handler: async (ctx, args) => {
+            await ctx.runMutation(component.clients.remove, { clientId: args.clientId });
             return null;
           },
         }),

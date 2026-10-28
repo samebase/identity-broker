@@ -42,6 +42,11 @@ const authRequestFields = {
   codeChallenge: string(),
   /** `prompt=login` or `max_age` was sent: the connector must reauthenticate or refuse. */
   freshLogin: boolean(),
+  /**
+   * SHA-256 hex of the `broker_txn` cookie set with the chooser page: `/continue` needs the cookie,
+   * so only the browser that saw the chooser can continue. Absent when /authorize skipped the chooser.
+   */
+  txnCookieHash: optional(string()),
   createdAt: number(),
   expiresAt: number(),
 };
@@ -60,7 +65,7 @@ export const vAuthRequest = union(
   }),
   // The connector callback arrived and the code exchange is running; a replay finds this and stops.
   object({ status: literal("claimed"), ...authRequestFields, connector: string() }),
-  // An email code was sent; the user types it.
+  // An email code was sent; the user types it. A resend replaces the code and keeps the counts.
   object({
     status: literal("emailSent"),
     ...authRequestFields,
@@ -68,7 +73,11 @@ export const vAuthRequest = union(
     email: string(),
     emailCodeHash: string(),
     emailCodeExpiresAt: number(),
+    /** Wrong codes typed, across every code sent for this request. */
     emailAttempts: number(),
+    /** Codes sent for this request. */
+    emailSends: number(),
+    emailLastSentAt: number(),
   }),
   // The connector attested the identity; the authorization code points here until it is exchanged.
   object({
@@ -96,7 +105,8 @@ export default defineSchema({
     createdAt: number(),
   })
     .index("by_token_hash", ["tokenHash"])
-    .index("by_app_id", ["appId"]),
+    .index("by_app_id", ["appId"])
+    .index("by_expires_at", ["expiresAt"]),
 
   clients: defineTable({
     clientId: string(),
@@ -128,6 +138,15 @@ export default defineSchema({
   })
     .index("by_code_hash", ["codeHash"])
     .index("by_expires_at", ["expiresAt"]),
+
+  /** One row per email code sent, kept for the rolling send window; no address, only its hash. */
+  emailSends: defineTable({
+    /** SHA-256 hex of the canonical address. */
+    emailHash: string(),
+    at: number(),
+  })
+    .index("by_email_hash_and_at", ["emailHash", "at"])
+    .index("by_at", ["at"]),
 
   signIns: defineTable({
     appId: string(),
