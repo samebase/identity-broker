@@ -1,0 +1,8 @@
+# Written by `npx convex dev --once` in a scratch deployment; codegen needs none of it.
+/convex/
+# Copied from the repository root by `prepack`.
+/README.md
+/LICENSE
+/NOTICE
+
+.env.local

@@ -1,0 +1,35 @@
+packages:
+  - "packages/*"
+
+catalog:
+  "@edge-runtime/vm": 5.0.0
+  "@types/node": 24.19.2
+  convex: 1.47.0
+  convex-test: 0.0.61
+  jose: 6.2.13
+  oauth4webapi: 3.8.8
+  openid-client: 6.8.8
+  typescript: 7.0.2
+  vite: npm:@voidzero-dev/vite-plus-core@1.3.0
+  vite-plus: 1.3.0
+  vitest: 5.0.4
+
+# Vite+ ships Vite and Vitest. Every package that asks for them gets the Vite+ builds.
+overrides:
+  vite: "catalog:"
+  vitest: "catalog:"
+
+peerDependencyRules:
+  allowAny:
+    - vite
+    - vitest
+
+# Wait 7 days before resolving newly published package versions, so the ecosystem has time to
+# detect and yank compromised releases before CI installs them.
+minimumReleaseAge: 10080
+minimumReleaseAgeStrict: true
+minimumReleaseAgeIgnoreMissingTime: false
+blockExoticSubdeps: true
+trustPolicy: no-downgrade
+allowBuilds:
+  esbuild: true

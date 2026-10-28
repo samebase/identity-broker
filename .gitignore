@@ -1,0 +1,9 @@
+.DS_Store
+*.local
+*.log
+node_modules
+dist/
+*.tgz
+*.tsbuildinfo
+.idea
+/.vscode/
