@@ -18,6 +18,9 @@ registers each deployment as a client at deploy time and never touches GitHub or
   your own action. `github()`, `google()` and `email()` are included.
 - A hub is a small Convex app that mounts the component. Fork
   [samebase/identity-hub](https://github.com/samebase/identity-hub) for one.
+- `@samebase/alchemy-identity-hub`: an Alchemy v2 resource, `IdentityHub.Client`, that registers a
+  deployment as a client at deploy time. See
+  [packages/alchemy-identity-hub](https://github.com/samebase/identity-broker/tree/main/packages/alchemy-identity-hub).
 
 ## Mount it
 

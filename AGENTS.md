@@ -10,6 +10,8 @@ docs/design.md for the decisions.
 - `packages/identity-broker/src/client`: the host-side endpoints (`defineIdentityBroker`), the
   connectors, key handling and JWT signing. Runs in the host's HTTP actions.
 - `packages/identity-broker/src/cli`: `identity-broker keys`.
+- `packages/alchemy-identity-hub/src`: `IdentityHub.Client`, the Alchemy v2 resource that registers
+  a deployment at the hub's `/register`. Its peer is the `alchemy` version that consumers pin.
 - `_generated` is Convex codegen output: `pnpm run codegen` after a schema or function change, from
   an anonymous local deployment (`CONVEX_AGENT_MODE=anonymous npx convex dev --once` first).
 
