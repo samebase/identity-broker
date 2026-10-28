@@ -348,9 +348,10 @@ export function defineIdentityBroker(config: IdentityBrokerConfig) {
   const registerPrefix = "/register/";
 
   /**
-   * `DELETE /register/<client_id>` deletes a client of the token's app. The segment is
-   * compared as sent: `/register` issues `cl_` and base64url, which a path carries as is. A client that is gone and a client of another app both answer 404, never 403,
-   * so a token learns nothing about another app's clients.
+   * `DELETE /register/<client_id>` deletes a client of the token's app. The segment is compared as
+   * sent: `/register` issues `cl_` and base64url, which a path carries as is. A client that is gone
+   * and a client of another app both answer 404, never 403, so a token learns nothing about another
+   * app's clients.
    */
   const unregister = httpActionGeneric(async (ctx, request) => {
     const auth = await registrationApp(ctx, request);

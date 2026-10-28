@@ -131,10 +131,7 @@ export function validateRegistration(payload: unknown): Validation<string> {
     return invalid(400, "invalid_client_metadata", 'response_types must be ["code"].');
   }
 
-  return {
-    ok: true,
-    value: redirectUri,
-  };
+  return { ok: true, value: redirectUri };
 }
 
 export type AuthorizeInput = {
