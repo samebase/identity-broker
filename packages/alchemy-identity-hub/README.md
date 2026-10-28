@@ -74,14 +74,14 @@ client.
   `expiresInDays` argument sets its lifetime).
 - `RegistrationRejected`: the hub answered 400 with an OAuth error, such as `invalid_redirect_uri`
   for a host the app does not allow (`identityBroker:setAllowedCallbackHosts` on the hub). The
-  message keeps the error code and the hub's description as one line of at most 200 printable
-  characters.
+  message is a fixed sentence for `invalid_redirect_uri`, `invalid_client_metadata`,
+  `invalid_request`, and `invalid_token`, and says "unknown error code" for any other code. It never
+  includes the hub's description.
 - `RegistrationFailed`: the hub could not be reached within 15 seconds, redirected, or gave another
   answer. The message carries only the status, or the error name and code, such as `ECONNREFUSED`.
   Check `issuer`.
 
-No message or log line contains the token, the client secret, or a body from the hub other than the
-OAuth error of a 400 answer.
+No message or log line contains the token, the client secret, or any text from the hub's answer.
 
 ## License
 

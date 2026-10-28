@@ -305,14 +305,15 @@ test.provider("a 201 with an empty client_secret fails", (stack) =>
   }),
 );
 
-test.provider("a 400 description becomes one line of at most 200 characters", (stack) =>
+test.provider("a 400 with a known code fails with a local sentence, not the hub's text", (stack) =>
   Effect.gen(function* () {
+    const secret = "hub-secret-7f3a";
     fakeHub({
       answer: () =>
         Response.json(
           {
             error: "invalid_redirect_uri",
-            error_description: `The host is not allowed.\r\n\u001b[31mForged log line\u001b[0m\n${"x".repeat(300)}`,
+            error_description: `The host is not allowed.\r\n\u001b[31mForged log line ${secret}`,
           },
           { status: 400 },
         ),
@@ -322,9 +323,32 @@ test.provider("a 400 description becomes one line of at most 200 characters", (s
       return expect.unreachable(`expected RegistrationRejected, got ${error._tag}`);
     }
     expect(error.code).toBe("invalid_redirect_uri");
-    expect(error.description).toMatch(/^The host is not allowed\. \[31mForged log line \[0m x+$/);
-    expect(error.description).toHaveLength(200);
+    expect(error.message).toContain("identityBroker:setAllowedCallbackHosts");
+    expect(error.message).not.toContain("The host is not allowed");
+    expect(error.message).not.toContain(secret);
     expect(error.message).not.toMatch(/\p{Cc}/u);
+    expect(error.message).not.toContain(token);
+  }),
+);
+
+test.provider("a 400 never repeats the hub's error code or description", (stack) =>
+  Effect.gen(function* () {
+    const secret = "hub-secret-7f3a";
+    fakeHub({
+      answer: () =>
+        Response.json(
+          { error: `invalid_${secret}`, error_description: `Leaked ${secret}` },
+          { status: 400 },
+        ),
+    });
+    const error = yield* Effect.flip(deployClient(stack, props));
+    if (!(error instanceof IdentityHub.RegistrationRejected)) {
+      return expect.unreachable(`expected RegistrationRejected, got ${error._tag}`);
+    }
+    expect(error.code).toBe("unknown");
+    expect(error.message).toContain("unknown error code");
+    expect(error.message).not.toContain(secret);
+    expect(JSON.stringify(error)).not.toContain(secret);
     expect(error.message).not.toContain(token);
   }),
 );
