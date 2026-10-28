@@ -444,21 +444,26 @@ test.provider("destroy succeeds when the hub no longer has the client", (stack) 
 );
 
 test.provider(
-  "destroy with a token the hub rejects leaves the client there and succeeds",
+  "destroy with a token the hub rejects fails, and a deploy with a new token lets the next destroy delete",
   (stack) =>
     Effect.gen(function* () {
       fakeHub();
       yield* deployClient(stack, props);
-      // The token was revoked since the deploy.
-      const hub = fakeHub({ tokens: [] });
-      const { warnings } = yield* warningsOf(stack.destroy());
-      // The state is empty: a second destroy makes no request.
+      // The token in state was revoked since the deploy, and a new one was minted.
+      const minted = "rt_minted-token";
+      const hub = fakeHub({ tokens: [minted] });
+      const error = yield* Effect.flip(stack.destroy());
+      const cause = Cause.squash(error.failures[0].cause);
+      if (!(cause instanceof IdentityHub.DeletionFailed)) {
+        return expect.unreachable(`expected DeletionFailed, got ${String(cause)}`);
+      }
+      expect(cause.message).toContain("rejected the registration token in state");
+      expect(cause.message).not.toContain(token);
+      // The deploy stores the new token without a hub call; the destroy then sends it.
+      yield* deployClient(stack, { ...props, registrationToken: Redacted.make(minted) });
+      expect(hub.registrations).toHaveLength(0);
       yield* stack.destroy();
-      expect(hub.deletions).toEqual([deletion("cl_1")]);
-      expect(warnings).toEqual([
-        [expect.stringContaining(`identityBroker:deleteClient '{"clientId":"cl_1"}'`)],
-      ]);
-      expect(JSON.stringify(warnings)).not.toContain(token);
+      expect(hub.deletions).toEqual([deletion("cl_1"), deletion("cl_1", minted)]);
     }),
 );
 

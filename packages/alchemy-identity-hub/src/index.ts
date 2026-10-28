@@ -66,9 +66,6 @@ const REJECTIONS = {
   invalid_redirect_uri: `the app does not allow the host of redirectUri (invalid_redirect_uri). Fix redirectUri, or allow its host for the app on the hub with \`npx convex run --prod identityBroker:setAllowedCallbackHosts '{"appId":"<app id>","allowedCallbackHosts":[...]}'\`, which replaces the list.`,
   invalid_client_metadata:
     "the hub refused the client metadata (invalid_client_metadata). Check that the hub runs @samebase/identity-broker 0.6.0 or later.",
-  invalid_request:
-    "the hub found the registration request malformed (invalid_request). Check that issuer is the hub's issuer URL.",
-  invalid_token: `the hub rejected the registration token (invalid_token). Mint a new one on the hub with \`npx convex run --prod identityBroker:mintRegistrationToken '{"appId":"<app id>"}'\` and pass it as registrationToken.`,
   unknown:
     "the hub answered with an unknown error code. Check that issuer is the hub's issuer URL and that the hub runs @samebase/identity-broker.",
 } as const;
@@ -76,8 +73,6 @@ const REJECTIONS = {
 const RejectionCode = Schema.Literals([
   "invalid_redirect_uri",
   "invalid_client_metadata",
-  "invalid_request",
-  "invalid_token",
   "unknown",
 ]);
 
@@ -113,7 +108,7 @@ export class DeletionFailed extends Schema.TaggedError<DeletionFailed>()("Deleti
   reason: Schema.String,
 }) {
   override get message() {
-    return `Deleting client ${this.clientId} at ${this.issuer}/register/${this.clientId} failed: ${this.reason}. The client stays in state, and the next deploy or destroy tries again.`;
+    return `Deleting client ${this.clientId} at ${this.issuer}/register/${this.clientId} failed: ${this.reason}. The client stays in state, and the next deploy or destroy tries again; a deploy with a new registrationToken stores that token for it.`;
   }
 }
 
@@ -234,7 +229,7 @@ const leftOnHub = (output: ClientAttributes, reason: string) =>
     `Client ${output.clientId} stays registered on ${output.issuer}: ${reason}. Delete it on the hub with \`npx convex run --prod identityBroker:deleteClient '{"clientId":"${output.clientId}"}'\`.`,
   );
 
-/** 204 or the broker's invalid_client 404 is done; 401 warns; anything else fails. */
+/** 204 or the broker's invalid_client 404 is done; anything else fails and keeps the state. */
 const unregister = (output: ClientAttributes, token: string) =>
   Effect.gen(function* () {
     const { issuer, clientId } = output;
@@ -250,10 +245,11 @@ const unregister = (output: ClientAttributes, token: string) =>
     });
     if (response.status === 204) return;
     if (response.status === 401) {
-      return yield* leftOnHub(
-        output,
-        "the hub rejected the registration token, which is wrong or revoked",
-      );
+      return yield* new DeletionFailed({
+        issuer,
+        clientId,
+        reason: "the hub rejected the registration token in state, which is wrong or revoked",
+      });
     }
     if (response.status === 404) {
       const body: unknown = yield* Effect.promise(() => response.json().catch(() => undefined));
