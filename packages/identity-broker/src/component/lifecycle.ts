@@ -7,8 +7,6 @@ const { number, object, optional } = v;
 
 /** How many documents one batch deletes per table, so a batch stays well inside one transaction. */
 const BATCH = 200;
-/** How many batches one `cleanup` call schedules after its own, so a backlog cannot loop forever. */
-const MAX_CONTINUATIONS = 50;
 
 const vCleanupArgs = object({
   now: number(),
@@ -28,12 +26,13 @@ const vCleanupCounts = object({
 
 /**
  * Deletes one batch of what has run out. A table that filled its batch may hold more, so the batch
- * schedules the next one, with the same `now`, until `MAX_CONTINUATIONS` batches followed the first.
+ * schedules the next one with the same `now`, until no table fills a batch. The cutoff never moves,
+ * so the run ends: a row written after the run began, a registration token minted with a positive
+ * lifetime included, runs out after `now`, and the rows that had run out by then are a fixed set.
  */
 async function cleanupBatch(
   ctx: MutationCtx,
   args: Infer<typeof vCleanupArgs>,
-  continuation: number,
 ): Promise<Infer<typeof vCleanupCounts>> {
   const requests = await ctx.db
     .query("authRequests")
@@ -102,12 +101,11 @@ async function cleanupBatch(
     signIns: signIns.length,
     emailSends: emailSends.length,
   };
-  if (continuation < MAX_CONTINUATIONS && Object.values(counts).some((count) => count === BATCH)) {
+  if (Object.values(counts).some((count) => count === BATCH)) {
     await ctx.scheduler.runAfter(0, internal.lifecycle.continueCleanup, {
       now: args.now,
       ...(previewClientMaxAgeMs === undefined ? {} : { previewClientMaxAgeMs }),
       signInRetentionMs: args.signInRetentionMs,
-      continuation: continuation + 1,
     });
   }
   return counts;
@@ -117,31 +115,21 @@ async function cleanupBatch(
  * Deletes what has run out: expired requests, codes and registration tokens, preview clients
  * nobody used for `previewClientMaxAgeMs` when the host passes it, audit rows older than
  * `signInRetentionMs`, and email send rows outside the send window. The host schedules this daily
- * from a cron; production and development clients are never touched. The counts are this call's batch: a full batch schedules
- * the next one, so one call drains the backlog.
+ * from a cron; production and development clients are never touched. The counts are this call's
+ * batch: a full batch schedules the next one, so one call drains everything older than `now`.
  */
 export const cleanup = mutation({
   args: vCleanupArgs,
   returns: vCleanupCounts,
-  handler: async (ctx, args) => await cleanupBatch(ctx, args, 0),
+  handler: async (ctx, args) => await cleanupBatch(ctx, args),
 });
 
 /** The next batch of a `cleanup` call that filled a batch. */
 export const continueCleanup = internalMutation({
-  args: { ...vCleanupArgs.fields, continuation: number() },
+  args: vCleanupArgs,
   returns: v.null(),
   handler: async (ctx, args) => {
-    await cleanupBatch(
-      ctx,
-      {
-        now: args.now,
-        ...(args.previewClientMaxAgeMs === undefined
-          ? {}
-          : { previewClientMaxAgeMs: args.previewClientMaxAgeMs }),
-        signInRetentionMs: args.signInRetentionMs,
-      },
-      args.continuation,
-    );
+    await cleanupBatch(ctx, args);
     return null;
   },
 });

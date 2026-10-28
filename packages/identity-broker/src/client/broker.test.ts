@@ -1325,4 +1325,35 @@ describe("cleanup", () => {
     const left = await h.t.run(async (ctx) => await ctx.db.query("emailSends").collect());
     expect(left.map((row) => row.emailHash)).toEqual(["recent"]);
   });
+
+  test("one call drains more expired requests than the 51 batches 0.4.0 stopped after", async () => {
+    const h = await createHarness({ connectors: [fakeUpstream().connector] });
+    vi.useFakeTimers();
+    const now = Date.now();
+    const request = {
+      status: "pending",
+      appId: "a",
+      clientId: "c",
+      redirectUri: REDIRECT_URI,
+      scope: "openid",
+      codeChallenge: "c",
+      freshLogin: false,
+      createdAt: now - 600_000,
+    } as const;
+    await h.t.run(async (ctx) => {
+      // 0.4.0 ran the first batch and at most 50 continuations, 200 rows each.
+      for (let row = 0; row < 51 * 200 + 1; row++) {
+        await ctx.db.insert("authRequests", {
+          ...request,
+          requestId: `r-${row}`,
+          expiresAt: now - 1,
+        });
+      }
+      await ctx.db.insert("authRequests", { ...request, requestId: "live", expiresAt: now + 1 });
+    });
+    await h.t.mutation(api.lifecycle.cleanup, { now, signInRetentionMs: 90 * 86_400_000 });
+    await h.t.finishAllScheduledFunctions(vi.runAllTimers);
+    const left = await h.t.run(async (ctx) => await ctx.db.query("authRequests").collect());
+    expect(left.map((row) => row.requestId)).toEqual(["live"]);
+  });
 });
