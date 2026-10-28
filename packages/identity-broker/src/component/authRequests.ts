@@ -2,7 +2,7 @@ import { v, type Infer } from "convex/values";
 import { mutation } from "./_generated/server";
 import type { Doc } from "./_generated/dataModel";
 import { sha256Base64Url } from "./crypto";
-import { vUpstreamIdentity } from "./schema";
+import { vTokenEndpointAuthMethod, vUpstreamIdentity } from "./schema";
 
 const { boolean, literal, number, object, optional, string, union } = v;
 
@@ -137,43 +137,90 @@ const vExchangeResult = union(
     nonce: optional(string()),
     identity: vUpstreamIdentity,
   }),
-  object({ ok: literal(false), description: string() }),
+  object({
+    ok: literal(false),
+    error: union(literal("invalid_client"), literal("invalid_grant")),
+    description: string(),
+  }),
 );
 
 /**
- * Redeems an authorization code: bound to the client, the redirect URI and the PKCE challenge of
- * its request (OAuth 2.1 section 4.1.3). The redemption deletes the request that holds the code, so
- * a second one finds nothing.
+ * Authenticates the client and redeems an authorization code: bound to the client, the redirect
+ * URI and the PKCE challenge of its request (OAuth 2.1 section 4.1.3). The client and its app are
+ * read in this transaction, so deleting either commits wholly before the redemption or after it.
+ * The redemption deletes the request that holds the code, so a second one finds nothing.
  */
 export const exchangeCode = mutation({
   args: {
-    codeHash: string(),
     clientId: string(),
+    /** SHA-256 hex of the client secret the token request carried. */
+    clientSecretHash: string(),
+    tokenEndpointAuthMethod: vTokenEndpointAuthMethod,
+    codeHash: string(),
     redirectUri: optional(string()),
     codeVerifier: string(),
     now: number(),
   },
   returns: vExchangeResult,
   handler: async (ctx, args): Promise<Infer<typeof vExchangeResult>> => {
+    const client = await ctx.db
+      .query("clients")
+      .withIndex("by_client_id", (q) => q.eq("clientId", args.clientId))
+      .unique();
+    const app =
+      client === null
+        ? null
+        : await ctx.db
+            .query("apps")
+            .withIndex("by_app_id", (q) => q.eq("appId", client.appId))
+            .unique();
+    if (
+      client === null ||
+      app === null ||
+      client.secretHash !== args.clientSecretHash ||
+      client.tokenEndpointAuthMethod !== args.tokenEndpointAuthMethod
+    ) {
+      return { ok: false, error: "invalid_client", description: "Client authentication failed." };
+    }
     const request = await ctx.db
       .query("authRequests")
       .withIndex("by_code_hash", (q) => q.eq("codeHash", args.codeHash))
       .unique();
     // Only a completed request holds a code hash.
     if (request === null || request.status !== "completed") {
-      return { ok: false, description: "The authorization code is unknown or was already used." };
+      return {
+        ok: false,
+        error: "invalid_grant",
+        description: "The authorization code is unknown or was already used.",
+      };
     }
     if (request.expiresAt <= args.now) {
-      return { ok: false, description: "The authorization code expired." };
+      return {
+        ok: false,
+        error: "invalid_grant",
+        description: "The authorization code expired.",
+      };
     }
     if (request.clientId !== args.clientId) {
-      return { ok: false, description: "The authorization code belongs to another client." };
+      return {
+        ok: false,
+        error: "invalid_grant",
+        description: "The authorization code belongs to another client.",
+      };
     }
     if (args.redirectUri !== undefined && args.redirectUri !== request.redirectUri) {
-      return { ok: false, description: "redirect_uri does not match the authorization request." };
+      return {
+        ok: false,
+        error: "invalid_grant",
+        description: "redirect_uri does not match the authorization request.",
+      };
     }
     if ((await sha256Base64Url(args.codeVerifier)) !== request.codeChallenge) {
-      return { ok: false, description: "code_verifier does not match code_challenge." };
+      return {
+        ok: false,
+        error: "invalid_grant",
+        description: "code_verifier does not match code_challenge.",
+      };
     }
     await ctx.db.delete("authRequests", request._id);
     return {

@@ -20,10 +20,11 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-function authorizeUrl(
-  h: Harness,
-  args: { clientId: string; challenge: string; extra?: Record<string, string> },
-) {
+function authorizeUrl(args: {
+  clientId: string;
+  challenge: string;
+  extra?: Record<string, string>;
+}) {
   const url = new URL(`${ISSUER}/authorize`);
   url.search = new URLSearchParams({
     client_id: args.clientId,
@@ -96,17 +97,27 @@ describe("metadata", () => {
     }
   });
 
-  test("the discovery document and the JWKS", async () => {
+  test("both discovery documents and the JWKS", async () => {
     const h = await createHarness({ connectors: [fakeUpstream()] });
-    const response = await h.fetchBroker(`${ISSUER}/.well-known/openid-configuration`);
-    expect(response.status).toBe(200);
-    const metadata = await response.json();
-    expect(metadata.issuer).toBe(ISSUER);
-    expect(metadata.jwks_uri).toBe(`${ISSUER}/.well-known/jwks.json`);
-    expect(metadata.subject_types_supported).toEqual(["pairwise"]);
-    expect(metadata.code_challenge_methods_supported).toEqual(["S256"]);
-    expect(metadata.token_endpoint_auth_methods_supported).toEqual(["client_secret_post"]);
-    expect(metadata.authorization_response_iss_parameter_supported).toBe(true);
+    for (const path of [
+      "/.well-known/openid-configuration",
+      "/.well-known/oauth-authorization-server",
+    ]) {
+      const response = await h.fetchBroker(`${ISSUER}${path}`);
+      expect(response.status).toBe(200);
+      const metadata = await response.json();
+      expect(metadata.issuer).toBe(ISSUER);
+      expect(metadata.jwks_uri).toBe(`${ISSUER}/.well-known/jwks.json`);
+      expect(metadata.registration_endpoint).toBe(`${ISSUER}/register`);
+      expect(metadata.subject_types_supported).toEqual(["pairwise"]);
+      expect(metadata.code_challenge_methods_supported).toEqual(["S256"]);
+      expect(metadata.token_endpoint_auth_methods_supported).toEqual([
+        "client_secret_post",
+        "client_secret_basic",
+      ]);
+      expect(metadata.claims_supported).toContain("connector_account_id");
+      expect(metadata.authorization_response_iss_parameter_supported).toBe(true);
+    }
     const jwks = await (await h.fetchBroker(`${ISSUER}/.well-known/jwks.json`)).json();
     expect(jwks.keys).toHaveLength(1);
     expect(jwks.keys[0].d).toBeUndefined();
@@ -114,7 +125,7 @@ describe("metadata", () => {
 });
 
 describe("registration", () => {
-  test("a host allowed later registers, for client_secret_post only", async () => {
+  test("a host allowed later registers, and the method defaults to client_secret_basic", async () => {
     const h = await createHarness({ connectors: [fakeUpstream()] });
     const { appId, token } = await h.registerClient("bristol");
     const register = (metadata: Record<string, string>) =>
@@ -132,13 +143,17 @@ describe("registration", () => {
       appId,
       allowedCallbackHosts: ["bristol.example"],
     });
-    const registered = await register(post);
-    expect(registered.status).toBe(201);
-    expect((await registered.json()).token_endpoint_auth_method).toBe("client_secret_post");
-    // The RFC 7591 default, client_secret_basic, is refused rather than assumed.
-    for (const metadata of [{}, { token_endpoint_auth_method: "client_secret_basic" }]) {
-      expect((await (await register(metadata)).json()).error).toBe("invalid_client_metadata");
+    // RFC 7591 section 2: without token_endpoint_auth_method, the client uses Basic.
+    for (const [metadata, method] of [
+      [post, "client_secret_post"],
+      [{}, "client_secret_basic"],
+    ] as const) {
+      const registered = await register(metadata);
+      expect(registered.status).toBe(201);
+      expect((await registered.json()).token_endpoint_auth_method).toBe(method);
     }
+    const none = await register({ token_endpoint_auth_method: "none" });
+    expect((await none.json()).error).toBe("invalid_client_metadata");
   });
 
   test("tokens are listed as hashes and can be revoked; a client can be deleted", async () => {
@@ -158,7 +173,7 @@ describe("registration", () => {
     expect(revoked.status).toBe(401);
     await h.t.mutation(api.clients.remove, { clientId });
     const { challenge } = await pkce();
-    expect((await h.fetchBroker(authorizeUrl(h, { clientId, challenge }))).status).toBe(400);
+    expect((await h.fetchBroker(authorizeUrl({ clientId, challenge }))).status).toBe(400);
   });
 
   test("needs a known token and an allowed host", async () => {
@@ -227,7 +242,7 @@ describe("authorization code flow with an OAuth connector", () => {
 
     const back = await completeUpstream(
       h,
-      await h.fetchBroker(authorizeUrl(h, { clientId, challenge })),
+      await h.fetchBroker(authorizeUrl({ clientId, challenge })),
     );
     expect(back.status).toBe(302);
     const location = new URL(back.headers.get("location") ?? "");
@@ -247,6 +262,7 @@ describe("authorization code flow with an OAuth connector", () => {
     expect(tokens.status).toBe(200);
     const body = await tokens.json();
     expect(body.token_type).toBe("Bearer");
+    expect(body.expires_in).toBe(300);
     expect(typeof body.access_token).toBe("string");
     expect(body.scope).toBe("openid email profile");
     const claims = decodeJwt(body.id_token);
@@ -265,7 +281,7 @@ describe("authorization code flow with an OAuth connector", () => {
     const otherBack = await completeUpstream(
       h,
       await h.fetchBroker(
-        authorizeUrl(h, { clientId: other.clientId, challenge: otherPkce.challenge }),
+        authorizeUrl({ clientId: other.clientId, challenge: otherPkce.challenge }),
       ),
     );
     const otherCode =
@@ -288,7 +304,7 @@ describe("authorization code flow with an OAuth connector", () => {
     const { verifier, challenge } = await pkce();
     const back = await completeUpstream(
       h,
-      await h.fetchBroker(authorizeUrl(h, { clientId, challenge })),
+      await h.fetchBroker(authorizeUrl({ clientId, challenge })),
     );
     const code = new URL(back.headers.get("location") ?? "").searchParams.get("code") ?? "";
 
@@ -332,13 +348,11 @@ describe("authorization code flow with an OAuth connector", () => {
     const { clientId } = await h.registerClient("bristol");
     const { challenge } = await pkce();
 
-    const unknownClient = await h.fetchBroker(
-      authorizeUrl(h, { clientId: "cl_unknown", challenge }),
-    );
+    const unknownClient = await h.fetchBroker(authorizeUrl({ clientId: "cl_unknown", challenge }));
     expect(unknownClient.status).toBe(400);
     expect(unknownClient.headers.get("content-type")).toMatch(/text\/html/);
 
-    const otherRedirect = authorizeUrl(h, { clientId, challenge });
+    const otherRedirect = authorizeUrl({ clientId, challenge });
     otherRedirect.searchParams.set("redirect_uri", "https://evil.example/cb");
     const badRedirect = await h.fetchBroker(otherRedirect);
     expect(badRedirect.status).toBe(400);
@@ -350,7 +364,7 @@ describe("authorization code flow with an OAuth connector", () => {
       ["client_id", "cl_other"],
       ["state", "other-state"],
     ] as const) {
-      const repeated = authorizeUrl(h, { clientId, challenge });
+      const repeated = authorizeUrl({ clientId, challenge });
       repeated.searchParams.append(name, value);
       const response = await h.fetchBroker(repeated);
       expect(response.status).toBe(400);
@@ -360,7 +374,7 @@ describe("authorization code flow with an OAuth connector", () => {
     }
 
     const noOpenid = await h.fetchBroker(
-      authorizeUrl(h, { clientId, challenge, extra: { scope: "email" } }),
+      authorizeUrl({ clientId, challenge, extra: { scope: "email" } }),
     );
     expect(noOpenid.status).toBe(302);
     const noOpenidUrl = new URL(noOpenid.headers.get("location") ?? "");
@@ -369,7 +383,7 @@ describe("authorization code flow with an OAuth connector", () => {
     expect(noOpenidUrl.searchParams.get("iss")).toBe(ISSUER);
 
     const none = await h.fetchBroker(
-      authorizeUrl(h, { clientId, challenge, extra: { prompt: "none" } }),
+      authorizeUrl({ clientId, challenge, extra: { prompt: "none" } }),
     );
     expect(new URL(none.headers.get("location") ?? "").searchParams.get("error")).toBe(
       "login_required",
@@ -378,7 +392,7 @@ describe("authorization code flow with an OAuth connector", () => {
     // The consumer names its connector: a missing or unknown one goes back as invalid_request.
     for (const connector of ["", "other"]) {
       const response = await h.fetchBroker(
-        authorizeUrl(h, { clientId, challenge, extra: { connector } }),
+        authorizeUrl({ clientId, challenge, extra: { connector } }),
       );
       const location = new URL(response.headers.get("location") ?? "");
       expect(location.origin + location.pathname).toBe(REDIRECT_URI);
@@ -391,7 +405,7 @@ describe("authorization code flow with an OAuth connector", () => {
     // The broker keeps no session, so it cannot attest a fresh login: prompt=login and max_age are
     // refused, never pretended.
     for (const extra of [{ prompt: "login" }, { max_age: "0" }]) {
-      const fresh = await h.fetchBroker(authorizeUrl(h, { clientId, challenge, extra }));
+      const fresh = await h.fetchBroker(authorizeUrl({ clientId, challenge, extra }));
       const location = new URL(fresh.headers.get("location") ?? "");
       expect(location.origin + location.pathname).toBe(REDIRECT_URI);
       expect(location.searchParams.get("error")).toBe("invalid_request");
@@ -402,7 +416,7 @@ describe("authorization code flow with an OAuth connector", () => {
     const h = await createHarness({ connectors: [fakeUpstream()] });
     const { clientId } = await h.registerClient("bristol");
     const { challenge } = await pkce();
-    const started = await h.fetchBroker(authorizeUrl(h, { clientId, challenge }));
+    const started = await h.fetchBroker(authorizeUrl({ clientId, challenge }));
     const upstreamUrl = new URL(started.headers.get("location") ?? "");
     const callback = new URL(upstreamUrl.searchParams.get("redirect_uri") ?? "");
     callback.searchParams.set("state", upstreamUrl.searchParams.get("state") ?? "");
@@ -432,7 +446,7 @@ describe("authorization code flow with an OAuth connector", () => {
     const { clientId } = await h.registerClient("bristol");
     const { challenge } = await pkce();
     const started = await h.fetchBroker(
-      authorizeUrl(h, { clientId, challenge, extra: { connector: "fake" } }),
+      authorizeUrl({ clientId, challenge, extra: { connector: "fake" } }),
     );
     const upstreamUrl = new URL(started.headers.get("location") ?? "");
     const crossed = new URL(`${ISSUER}/connectors/other/callback`);
@@ -450,7 +464,7 @@ describe("authorization code flow with an OAuth connector", () => {
     const logged = vi.spyOn(console, "error").mockImplementation(() => {});
     const callback = async (params: Record<string, string>) => {
       const { challenge } = await pkce();
-      const started = await h.fetchBroker(authorizeUrl(h, { clientId, challenge }));
+      const started = await h.fetchBroker(authorizeUrl({ clientId, challenge }));
       const upstreamUrl = new URL(started.headers.get("location") ?? "");
       const url = new URL(upstreamUrl.searchParams.get("redirect_uri") ?? "");
       url.searchParams.set("state", upstreamUrl.searchParams.get("state") ?? "");
@@ -481,6 +495,81 @@ describe("authorization code flow with an OAuth connector", () => {
     ).toEqual({ error: "server_error", description: "Fake sign-in failed." });
   });
 
+  test("a form POST to /authorize starts the sign-in as a GET does", async () => {
+    const h = await createHarness({ connectors: [fakeUpstream()] });
+    const { clientId } = await h.registerClient("bristol");
+    const { challenge } = await pkce();
+    const post = (contentType: string) =>
+      h.fetchBroker(`${ISSUER}/authorize`, {
+        method: "POST",
+        headers: { "Content-Type": contentType },
+        body: authorizeUrl({ clientId, challenge }).searchParams.toString(),
+      });
+    const started = await post("application/x-www-form-urlencoded");
+    expect(started.status).toBe(302);
+    expect(new URL(started.headers.get("location") ?? "").origin).toBe("https://upstream.test");
+    expect((await post("application/json")).status).toBe(415);
+  });
+
+  test("a client authenticates by the method it registered, and by one method only", async () => {
+    const h = await createHarness({ connectors: [fakeUpstream()] });
+    const posting = await h.registerClient("bristol");
+    // Registered without token_endpoint_auth_method: client_secret_basic.
+    const basicClient = await (
+      await h.fetchBroker(`${ISSUER}/register`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${posting.token}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ redirect_uris: [REDIRECT_URI] }),
+      })
+    ).json();
+    const clientId = String(basicClient.client_id);
+    const clientSecret = String(basicClient.client_secret);
+    const basic = (id: string, secret: string) => `Basic ${btoa(`${id}:${secret}`)}`;
+    const { verifier, challenge } = await pkce();
+    const back = await completeUpstream(
+      h,
+      await h.fetchBroker(authorizeUrl({ clientId, challenge })),
+    );
+    const code = new URL(back.headers.get("location") ?? "").searchParams.get("code") ?? "";
+    const redeem = (headers: Record<string, string>, credentials: Record<string, string>) =>
+      h.fetchBroker(`${ISSUER}/token`, {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded", ...headers },
+        body: new URLSearchParams({
+          grant_type: "authorization_code",
+          code,
+          code_verifier: verifier,
+          ...credentials,
+        }).toString(),
+      });
+
+    // A Basic header and body credentials both: refused, even with the right body credentials.
+    const both = await redeem(
+      { Authorization: basic(clientId, "wrong") },
+      { client_id: clientId, client_secret: clientSecret },
+    );
+    expect(both.status).toBe(400);
+    expect((await both.json()).error).toBe("invalid_request");
+    // A wrong or malformed header, or the header of a client registered for the body, is a 401
+    // with a Basic challenge.
+    for (const authorization of [
+      basic(clientId, "wrong"),
+      `Basic ${btoa("a:%E0%A4%A")}`,
+      basic(posting.clientId, posting.clientSecret),
+    ]) {
+      const response = await redeem({ Authorization: authorization }, {});
+      expect(response.status).toBe(401);
+      expect(response.headers.get("www-authenticate")).toBe('Basic realm="token"');
+      expect((await response.json()).error).toBe("invalid_client");
+    }
+    // The Basic client's credentials in the body are not its method: a 401 without a challenge.
+    const inBody = await redeem({}, { client_id: clientId, client_secret: clientSecret });
+    expect(inBody.status).toBe(401);
+    expect(inBody.headers.get("www-authenticate")).toBeNull();
+    // None of the refusals consumed the code.
+    expect((await redeem({ Authorization: basic(clientId, clientSecret) }, {})).status).toBe(200);
+  });
+
   test("claims and the granted scope follow the requested scopes", async () => {
     const h = await createHarness({ connectors: [fakeUpstream()] });
     const { clientId, clientSecret } = await h.registerClient("bristol");
@@ -492,7 +581,7 @@ describe("authorization code flow with an OAuth connector", () => {
       const { verifier, challenge } = await pkce();
       const back = await completeUpstream(
         h,
-        await h.fetchBroker(authorizeUrl(h, { clientId, challenge, extra: { scope } })),
+        await h.fetchBroker(authorizeUrl({ clientId, challenge, extra: { scope } })),
       );
       const code = new URL(back.headers.get("location") ?? "").searchParams.get("code") ?? "";
       const tokens = await (await exchange(h, { code, clientId, clientSecret, verifier })).json();
@@ -509,7 +598,7 @@ describe("authorization code flow with an OAuth connector", () => {
     const h = await createHarness({ connectors: [fakeUpstream()] });
     const { challenge } = await pkce();
     for (const response of [
-      await h.fetchBroker(authorizeUrl(h, { clientId: "cl_unknown", challenge })),
+      await h.fetchBroker(authorizeUrl({ clientId: "cl_unknown", challenge })),
       await h.fetchBroker(`${ISSUER}/connectors/fake/callback`),
     ]) {
       expect(response.headers.get("content-security-policy")).toBe("frame-ancestors 'none'");

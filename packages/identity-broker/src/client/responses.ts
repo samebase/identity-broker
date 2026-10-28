@@ -13,8 +13,22 @@ export function json(body: unknown, status = 200, headers: Record<string, string
 }
 
 /** An OAuth error body (RFC 6749 section 5.2), for the endpoints that answer the client directly. */
-export function oauthError(status: number, error: string, description: string): Response {
-  return json({ error, error_description: description }, status);
+export function oauthError(
+  status: number,
+  error: string,
+  description: string,
+  headers: Record<string, string> = {},
+): Response {
+  return json({ error, error_description: description }, status, headers);
+}
+
+/** The parameters of a form POST, or null for another content type. */
+export async function readForm(request: Request): Promise<URLSearchParams | null> {
+  const contentType = request.headers.get("content-type")?.toLowerCase() ?? "";
+  if (!contentType.startsWith("application/x-www-form-urlencoded")) {
+    return null;
+  }
+  return new URLSearchParams(await request.text());
 }
 
 export function redirect(location: string): Response {

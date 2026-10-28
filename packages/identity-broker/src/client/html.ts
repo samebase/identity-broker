@@ -1,4 +1,4 @@
-/** The error page the broker renders when a request has no trusted redirect target. */
+/** The 400 page the broker renders when a request has no trusted redirect target. */
 
 function escape(value: string): string {
   return value
@@ -15,7 +15,7 @@ const STYLE = `
   p { margin: 0.5rem 0; }
 `;
 
-export function errorPage(title: string, message: string, status = 400): Response {
+export function errorPage(title: string, message: string): Response {
   const html = `<!doctype html>
 <html lang="en">
 <head>
@@ -28,7 +28,7 @@ export function errorPage(title: string, message: string, status = 400): Respons
 <body><main><h1>${escape(title)}</h1><p>${escape(message)}</p></main></body>
 </html>`;
   return new Response(html, {
-    status,
+    status: 400,
     headers: {
       "Content-Type": "text/html; charset=utf-8",
       "Cache-Control": "no-store",

@@ -20,6 +20,7 @@ import { finishUpstream, startUpstream } from "./connectors/upstream.js";
 import { errorPage } from "./html.js";
 import { signIdToken, type IdentityClaims } from "./jwt.js";
 import {
+  ID_TOKEN_TTL_SECONDS,
   JWKS_MAX_AGE_SECONDS,
   parseKeySet,
   publicJwks,
@@ -29,6 +30,7 @@ import {
 import {
   hostAllowed,
   readBearerToken,
+  readClientAuthentication,
   validateAuthorizeRest,
   validateAuthorizeTarget,
   validateRegistration,
@@ -39,6 +41,7 @@ import {
   authorizationResponse,
   json,
   oauthError,
+  readForm,
   redirect,
 } from "./responses.js";
 import { pairwiseSubject, randomToken, sha256Hex } from "./subject.js";
@@ -94,24 +97,38 @@ export function defineIdentityBroker(config: IdentityBrokerConfig) {
   const callbackUrl = (connector: OauthConnector | OidcConnector) =>
     `${issuer}/connectors/${connector.name}/callback`;
 
-  /**
-   * OIDC Discovery metadata: the required members, the scopes, and each member whose omitted
-   * default would differ from what the broker supports.
-   */
+  /** OIDC Discovery and RFC 8414 metadata, served at both well-known locations. */
   const metadata = {
     issuer,
     authorization_endpoint: `${issuer}/authorize`,
     token_endpoint: `${issuer}/token`,
     jwks_uri: `${issuer}/.well-known/jwks.json`,
+    registration_endpoint: `${issuer}/register`,
     scopes_supported: SCOPES,
     response_types_supported: ["code"],
     response_modes_supported: ["query"],
     grant_types_supported: ["authorization_code"],
     subject_types_supported: ["pairwise"],
     id_token_signing_alg_values_supported: [SIGNING_ALGORITHM],
-    token_endpoint_auth_methods_supported: ["client_secret_post"],
+    token_endpoint_auth_methods_supported: ["client_secret_post", "client_secret_basic"],
     code_challenge_methods_supported: ["S256"],
+    claims_supported: [
+      "sub",
+      "iss",
+      "aud",
+      "exp",
+      "iat",
+      "nonce",
+      "email",
+      "email_verified",
+      "name",
+      "picture",
+      "connector",
+      "connector_account_id",
+    ],
     authorization_response_iss_parameter_supported: true,
+    claims_parameter_supported: false,
+    request_parameter_supported: false,
     request_uri_parameter_supported: false,
   };
 
@@ -125,26 +142,30 @@ export function defineIdentityBroker(config: IdentityBrokerConfig) {
     }),
   );
 
+  /** GET and form POST alike (OIDC Core 3.1.2.1). */
   const authorize = httpActionGeneric(async (ctx, request) => {
-    const params = new URL(request.url).searchParams;
+    const params =
+      request.method === "GET" ? new URL(request.url).searchParams : await readForm(request);
+    if (params === null) {
+      return oauthError(
+        415,
+        "invalid_request",
+        "The body must be application/x-www-form-urlencoded.",
+      );
+    }
     const target = validateAuthorizeTarget(params);
     if (!target.ok) {
-      return errorPage("Invalid sign-in request", target.description, target.status);
+      return errorPage("Invalid sign-in request", target.description);
     }
     const client = await ctx.runQuery(component.clients.get, { clientId: target.value.clientId });
     if (client === null) {
-      return errorPage(
-        "Unknown client",
-        "The client_id is not registered with this provider.",
-        400,
-      );
+      return errorPage("Unknown client", "The client_id is not registered with this provider.");
     }
     // Exact string comparison, and no redirect to a URI that is not registered (RFC 9700 4.1.3).
     if (client.redirectUri !== target.value.redirectUri) {
       return errorPage(
         "Invalid redirect URI",
         "The redirect_uri is not the one registered for this client.",
-        400,
       );
     }
     const back = {
@@ -189,7 +210,7 @@ export function defineIdentityBroker(config: IdentityBrokerConfig) {
       const url = new URL(request.url);
       const state = url.searchParams.get("state");
       if (state === null) {
-        return errorPage("Invalid callback", "The provider sent no state.", 400);
+        return errorPage("Invalid callback", "The provider sent no state.");
       }
       const now = Date.now();
       const claim = await ctx.runMutation(component.authRequests.claimUpstream, {
@@ -201,7 +222,6 @@ export function defineIdentityBroker(config: IdentityBrokerConfig) {
         return errorPage(
           "Sign-in link used",
           "This sign-in link is invalid or was already used. Return to the app and try again.",
-          400,
         );
       }
       const back = { redirectUri: claim.redirectUri, issuer, state: claim.state };
@@ -312,7 +332,7 @@ export function defineIdentityBroker(config: IdentityBrokerConfig) {
     if (!validation.ok) {
       return oauthError(validation.status, validation.error, validation.description);
     }
-    const redirectUri = validation.value;
+    const { redirectUri, tokenEndpointAuthMethod } = validation.value;
     const host = new URL(redirectUri).hostname;
     if (!hostAllowed(host, app.allowedCallbackHosts)) {
       return oauthError(
@@ -327,6 +347,7 @@ export function defineIdentityBroker(config: IdentityBrokerConfig) {
       clientId,
       appId: app.appId,
       secretHash: await sha256Hex(clientSecret),
+      tokenEndpointAuthMethod,
       redirectUri,
     });
     return json(
@@ -337,7 +358,7 @@ export function defineIdentityBroker(config: IdentityBrokerConfig) {
         client_secret_expires_at: 0,
         redirect_uris: [redirectUri],
         software_id: app.appId,
-        token_endpoint_auth_method: "client_secret_post",
+        token_endpoint_auth_method: tokenEndpointAuthMethod,
         grant_types: ["authorization_code"],
         response_types: ["code"],
       },
@@ -373,36 +394,46 @@ export function defineIdentityBroker(config: IdentityBrokerConfig) {
   });
 
   const token = httpActionGeneric(async (ctx, request) => {
-    const contentType = request.headers.get("content-type")?.toLowerCase() ?? "";
-    if (!contentType.startsWith("application/x-www-form-urlencoded")) {
+    const params = await readForm(request);
+    if (params === null) {
       return oauthError(
         415,
         "invalid_request",
         "The body must be application/x-www-form-urlencoded.",
       );
     }
-    const validation = validateTokenRequest(new URLSearchParams(await request.text()));
+    const authorization = request.headers.get("authorization");
+    // RFC 6749 section 5.2: a client that authenticated with the header gets a 401 with a challenge.
+    const challenge: Record<string, string> =
+      authorization === null ? {} : { "WWW-Authenticate": 'Basic realm="token"' };
+    const clientAuth = readClientAuthentication(authorization, params);
+    if (!clientAuth.ok) {
+      return oauthError(
+        clientAuth.status,
+        clientAuth.error,
+        clientAuth.description,
+        clientAuth.status === 401 ? challenge : {},
+      );
+    }
+    const validation = validateTokenRequest(params);
     if (!validation.ok) {
       return oauthError(validation.status, validation.error, validation.description);
     }
-    const client = await ctx.runQuery(component.clients.get, {
-      clientId: validation.value.clientId,
-    });
-    if (client === null || client.secretHash !== (await sha256Hex(validation.value.clientSecret))) {
-      return oauthError(401, "invalid_client", "Client authentication failed.");
-    }
-    const now = Date.now();
     const exchange = await ctx.runMutation(component.authRequests.exchangeCode, {
+      clientId: clientAuth.value.clientId,
+      clientSecretHash: await sha256Hex(clientAuth.value.clientSecret),
+      tokenEndpointAuthMethod: clientAuth.value.method,
       codeHash: await sha256Hex(validation.value.code),
-      clientId: client.clientId,
       ...(validation.value.redirectUri === undefined
         ? {}
         : { redirectUri: validation.value.redirectUri }),
       codeVerifier: validation.value.codeVerifier,
-      now,
+      now: Date.now(),
     });
     if (!exchange.ok) {
-      return oauthError(400, "invalid_grant", exchange.description);
+      return exchange.error === "invalid_client"
+        ? oauthError(401, "invalid_client", exchange.description, challenge)
+        : oauthError(400, "invalid_grant", exchange.description);
     }
     const keys = keySet();
     const sub = await pairwiseSubject({
@@ -430,16 +461,17 @@ export function defineIdentityBroker(config: IdentityBrokerConfig) {
     }
     return json({
       // Required by RFC 6749 section 5.1; it authorizes nothing, since the broker has no
-      // protected resource such as a UserInfo endpoint.
+      // protected resource such as a UserInfo endpoint. `expires_in` is the id_token's lifetime.
       access_token: randomToken(32),
       token_type: "Bearer",
       id_token: await signIdToken({
         keySet: keys,
         issuer,
-        clientId: client.clientId,
+        clientId: clientAuth.value.clientId,
         claims,
         nonce: exchange.nonce,
       }),
+      expires_in: ID_TOKEN_TTL_SECONDS,
       scope: exchange.scope,
     });
   });
@@ -452,8 +484,14 @@ export function defineIdentityBroker(config: IdentityBrokerConfig) {
         method: "GET",
         handler: discovery,
       });
+      http.route({
+        path: "/.well-known/oauth-authorization-server",
+        method: "GET",
+        handler: discovery,
+      });
       http.route({ path: "/.well-known/jwks.json", method: "GET", handler: jwks });
       http.route({ path: "/authorize", method: "GET", handler: authorize });
+      http.route({ path: "/authorize", method: "POST", handler: authorize });
       http.route({ path: "/register", method: "POST", handler: register });
       http.route({ pathPrefix: registerPrefix, method: "DELETE", handler: unregister });
       http.route({ path: "/token", method: "POST", handler: token });

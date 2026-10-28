@@ -1,5 +1,6 @@
 import { v } from "convex/values";
 import { mutation, query } from "./_generated/server";
+import { vTokenEndpointAuthMethod } from "./schema";
 
 const { array, boolean, object, string } = v;
 
@@ -7,6 +8,7 @@ const vClient = object({
   clientId: string(),
   appId: string(),
   secretHash: string(),
+  tokenEndpointAuthMethod: vTokenEndpointAuthMethod,
   redirectUri: string(),
 });
 
@@ -16,12 +18,13 @@ export const create = mutation({
     clientId: string(),
     appId: string(),
     secretHash: string(),
+    tokenEndpointAuthMethod: vTokenEndpointAuthMethod,
     redirectUri: string(),
   },
   returns: v.null(),
   handler: async (ctx, args) => {
     // A registration that read its token before `apps.remove` ran must not leave a client behind:
-    // a client exists only while its app does, so /authorize and /token need not read the app.
+    // a client exists only while its app does, so /authorize need not read the app.
     const app = await ctx.db
       .query("apps")
       .withIndex("by_app_id", (q) => q.eq("appId", args.appId))
@@ -40,6 +43,7 @@ export const create = mutation({
       clientId: args.clientId,
       appId: args.appId,
       secretHash: args.secretHash,
+      tokenEndpointAuthMethod: args.tokenEndpointAuthMethod,
       redirectUri: args.redirectUri,
     });
     return null;

@@ -13,9 +13,22 @@ const verifier = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
 const REQUEST_TTL = 600_000;
 const CODE_TTL = 60_000;
 
-/** A request /authorize sent to the "github" connector at `now`. */
+/**
+ * The app "app" with the clients "cl" and "other", each with the secret hash "secret-hash" for
+ * client_secret_post, and a request of "cl" that /authorize sent to the "github" connector at `now`.
+ */
 async function upstreamRequest() {
   const t = convexTest(schema, modules);
+  await t.mutation(api.apps.create, { appId: "app", allowedCallbackHosts: ["app.test"] });
+  for (const clientId of ["cl", "other"]) {
+    await t.mutation(api.clients.create, {
+      clientId,
+      appId: "app",
+      secretHash: "secret-hash",
+      tokenEndpointAuthMethod: "client_secret_post",
+      redirectUri: "https://app.test/cb",
+    });
+  }
   await t.mutation(api.authRequests.create, {
     appId: "app",
     clientId: "cl",
@@ -51,12 +64,23 @@ async function complete(t: T, at: number) {
   });
 }
 
-const exchange = (t: T, at: number, client: { clientId?: string; codeVerifier?: string } = {}) =>
+const exchange = (
+  t: T,
+  at: number,
+  change: {
+    clientId?: string;
+    clientSecretHash?: string;
+    tokenEndpointAuthMethod?: "client_secret_basic";
+    codeVerifier?: string;
+  } = {},
+) =>
   t.mutation(api.authRequests.exchangeCode, {
+    clientId: change.clientId ?? "cl",
+    clientSecretHash: change.clientSecretHash ?? "secret-hash",
+    tokenEndpointAuthMethod: change.tokenEndpointAuthMethod ?? "client_secret_post",
     codeHash: "ch",
-    clientId: client.clientId ?? "cl",
     redirectUri: "https://app.test/cb",
-    codeVerifier: client.codeVerifier ?? verifier,
+    codeVerifier: change.codeVerifier ?? verifier,
     now: at,
   });
 
@@ -71,13 +95,22 @@ describe("one request from /authorize to the token endpoint", () => {
     // The claim is single use.
     expect(await claim(t, now)).toEqual({ status: "missing" });
 
-    // A wrong verifier or another client leaves the code redeemable.
+    // A wrong secret, method or verifier, or another client, leaves the code redeemable.
+    for (const change of [
+      { clientSecretHash: "wrong" },
+      { tokenEndpointAuthMethod: "client_secret_basic" as const },
+      { clientId: "unknown" },
+    ]) {
+      expect(await exchange(t, now, change)).toMatchObject({ ok: false, error: "invalid_client" });
+    }
     expect(await exchange(t, now, { codeVerifier: "x".repeat(43) })).toMatchObject({
       ok: false,
+      error: "invalid_grant",
       description: expect.stringMatching(/code_verifier/),
     });
     expect(await exchange(t, now, { clientId: "other" })).toMatchObject({
       ok: false,
+      error: "invalid_grant",
       description: expect.stringMatching(/another client/),
     });
     expect(await exchange(t, now)).toEqual({
@@ -92,6 +125,33 @@ describe("one request from /authorize to the token endpoint", () => {
       ok: false,
       description: expect.stringMatching(/already used/),
     });
+  });
+
+  test("an app or client deleted before the redemption commits refuses it as invalid_client", async () => {
+    // The token endpoint read nothing that the redemption trusts: it runs after the deletion.
+    const appRemoved = await upstreamRequest();
+    expect(await complete(appRemoved, now)).toBe(true);
+    await appRemoved.mutation(api.apps.remove, { appId: "app" });
+    // The app row alone gone and its client left: the app check, not the client check, refuses.
+    const appRowGone = await upstreamRequest();
+    expect(await complete(appRowGone, now)).toBe(true);
+    await appRowGone.run(async (ctx) => {
+      const app = await ctx.db
+        .query("apps")
+        .withIndex("by_app_id", (q) => q.eq("appId", "app"))
+        .unique();
+      if (app !== null) await ctx.db.delete("apps", app._id);
+    });
+    const clientGone = await upstreamRequest();
+    expect(await complete(clientGone, now)).toBe(true);
+    await clientGone.mutation(api.clients.remove, { clientId: "cl" });
+    for (const t of [appRemoved, appRowGone, clientGone]) {
+      expect(await exchange(t, now)).toEqual({
+        ok: false,
+        error: "invalid_client",
+        description: "Client authentication failed.",
+      });
+    }
   });
 
   test("each status runs out at its expiresAt", async () => {
