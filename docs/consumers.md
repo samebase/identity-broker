@@ -43,8 +43,11 @@ Register the deployment once, after it exists, with the app's registration token
 ```sh
 curl -sS -X POST "$HUB/register" \
   -H "Authorization: Bearer $HUB_REGISTRATION_TOKEN" -H "Content-Type: application/json" \
-  -d "{\"redirect_uris\":[\"$CONVEX_SITE_URL/oauth/hub/callback\"],\"client_name\":\"Bristol\",\"software_version\":\"$DEPLOYMENT\",\"deployment_type\":\"preview\"}"
+  -d "{\"redirect_uris\":[\"$CONVEX_SITE_URL/oauth/hub/callback\"],\"client_name\":\"Bristol\",\"software_version\":\"$DEPLOYMENT\",\"deployment_type\":\"preview\",\"token_endpoint_auth_method\":\"client_secret_post\"}"
 ```
+
+`client_secret_post` because Convex Auth's generic OAuth method posts the client credentials in the
+body; without it the client gets the RFC 7591 default, `client_secret_basic`.
 
 Store the returned `client_id` and `client_secret` on that deployment as `HUB_CLIENT_ID` and
 `HUB_CLIENT_SECRET` (`npx convex env set --deployment <name> ...`). Keep the registration token in

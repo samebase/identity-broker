@@ -65,8 +65,18 @@ export default http;
 ```ts
 // convex/identityBroker.ts: administration for `npx convex run`
 import { broker } from "./http";
-export const { createApp, mintRegistrationToken, deleteApp, listApps, listClients, cleanup } =
-  broker.admin();
+export const {
+  createApp,
+  mintRegistrationToken,
+  listRegistrationTokens,
+  revokeRegistrationToken,
+  setAllowedCallbackHosts,
+  deleteClient,
+  deleteApp,
+  listApps,
+  listClients,
+  cleanup,
+} = broker.admin();
 ```
 
 Keys: `npx identity-broker keys` prints the value for `IDENTITY_BROKER_KEYS`; `keys --rotate`

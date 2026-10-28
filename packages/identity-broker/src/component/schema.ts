@@ -42,6 +42,11 @@ const authRequestFields = {
   codeChallenge: string(),
   /** `prompt=login` or `max_age` was sent: the connector must reauthenticate or refuse. */
   freshLogin: boolean(),
+  /**
+   * SHA-256 hex of the `broker_txn` cookie set with the chooser page: `/continue` needs the cookie,
+   * so only the browser that saw the chooser can continue. Absent when /authorize skipped the chooser.
+   */
+  txnCookieHash: optional(string()),
   createdAt: number(),
   expiresAt: number(),
 };
@@ -100,7 +105,8 @@ export default defineSchema({
     createdAt: number(),
   })
     .index("by_token_hash", ["tokenHash"])
-    .index("by_app_id", ["appId"]),
+    .index("by_app_id", ["appId"])
+    .index("by_expires_at", ["expiresAt"]),
 
   clients: defineTable({
     clientId: string(),

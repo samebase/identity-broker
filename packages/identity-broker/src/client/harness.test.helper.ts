@@ -106,6 +106,8 @@ export async function createHarness(options: {
         client_name: `${args.appName} dev`,
         software_version: "dev-1",
         deployment_type: "development",
+        // As @samebase/alchemy-identity-hub registers: Convex Auth posts the client credentials.
+        token_endpoint_auth_method: "client_secret_post",
       }),
     });
     if (response.status !== 201) {

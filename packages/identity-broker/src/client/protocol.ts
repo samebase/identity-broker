@@ -136,8 +136,9 @@ export function validateRegistration(payload: unknown): Validation<RegistrationI
     );
   }
 
+  // RFC 7591 section 2: the default is client_secret_basic.
   const authMethod = TOKEN_ENDPOINT_AUTH_METHODS.find(
-    (method) => method === (record["token_endpoint_auth_method"] ?? "client_secret_post"),
+    (method) => method === (record["token_endpoint_auth_method"] ?? "client_secret_basic"),
   );
   if (authMethod === undefined) {
     return invalid(
@@ -238,6 +239,9 @@ export function validateAuthorizeRest(
     return invalid(400, "invalid_request", 'code_challenge_method must be "S256".');
   }
   const prompt = (params.get("prompt") ?? "").split(/\s+/).filter((value) => value.length > 0);
+  if (prompt.some((value) => value !== "none" && value !== "login")) {
+    return invalid(400, "invalid_request", "prompt value not supported");
+  }
   if (prompt.includes("none") && prompt.length > 1) {
     return invalid(400, "invalid_request", "prompt=none cannot be combined with other values.");
   }
@@ -273,12 +277,23 @@ export type TokenInput = {
   client: { clientId: string; clientSecret: string; method: TokenEndpointAuthMethod };
 };
 
-/** Client credentials from HTTP Basic (RFC 6749 section 2.3.1) or the form body. */
+/**
+ * Client credentials from HTTP Basic (RFC 6749 section 2.3.1) or the form body. The first look at a
+ * token request, so it also refuses a repeated parameter (RFC 6749 section 3.2) and a request that
+ * uses both methods (section 2.3).
+ */
 export function readClientAuthentication(
   authorization: string | null,
   params: URLSearchParams,
 ): Validation<TokenInput["client"]> {
+  const names = [...params.keys()];
+  if (new Set(names).size !== names.length) {
+    return invalid(400, "invalid_request", "A parameter is repeated.");
+  }
   if (authorization !== null) {
+    if (params.has("client_secret")) {
+      return invalid(400, "invalid_request", "Use one client authentication method, not two.");
+    }
     const match = authorization.trim().match(/^basic\s+(.+)$/i);
     if (match === null || match[1] === undefined) {
       return invalid(401, "invalid_client", "Only HTTP Basic client authentication is supported.");
@@ -297,14 +312,18 @@ export function readClientAuthentication(
         "The Authorization header must hold client_id:client_secret.",
       );
     }
-    return {
-      ok: true,
-      value: {
-        clientId: decodeURIComponent(decoded.slice(0, separator)),
-        clientSecret: decodeURIComponent(decoded.slice(separator + 1)),
-        method: "client_secret_basic",
-      },
-    };
+    try {
+      return {
+        ok: true,
+        value: {
+          clientId: decodeURIComponent(decoded.slice(0, separator)),
+          clientSecret: decodeURIComponent(decoded.slice(separator + 1)),
+          method: "client_secret_basic",
+        },
+      };
+    } catch {
+      return invalid(401, "invalid_client", "The Authorization header is not valid form encoding.");
+    }
   }
   const clientId = params.get("client_id") ?? "";
   const clientSecret = params.get("client_secret") ?? "";

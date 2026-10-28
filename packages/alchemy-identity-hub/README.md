@@ -40,7 +40,9 @@ The hub implements RFC 7591 registration only. It has no endpoint to read, chang
 client.
 
 - First deploy: `POST <issuer>/register` with the token as a Bearer token. The request times out
-  after 15 seconds and does not follow redirects.
+  after 15 seconds and does not follow redirects. It asks for `client_secret_post`, because Convex
+  Auth's generic OAuth method posts the client credentials in the body; the hub's default is
+  `client_secret_basic`.
 - A changed normalized `issuer`, `redirectUri`, or `deploymentType` replaces the resource: a new
   client is registered. The old client stays on the hub, which removes a preview client after 30
   days without a sign-in and keeps a production or development client until the app is deleted

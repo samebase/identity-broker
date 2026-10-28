@@ -101,6 +101,7 @@ test.provider("the first deploy registers the deployment and outputs the client"
           client_name: "Bristol preview",
           software_version: "happy-otter-123",
           deployment_type: "preview",
+          token_endpoint_auth_method: "client_secret_post",
         },
       },
     ]);

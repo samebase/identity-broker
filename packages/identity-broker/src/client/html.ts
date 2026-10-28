@@ -52,6 +52,8 @@ export function page(title: string, body: string, status = 200): Response {
 export function chooserPage(args: {
   appName: string;
   firstParty: boolean;
+  /** The granted scopes: the consent names only what they release. */
+  scopes: string[];
   connectors: Array<{ name: string; label: string; href: string }>;
   denyHref: string;
 }): Response {
@@ -61,9 +63,18 @@ export function chooserPage(args: {
         `<a class="button" href="${escape(connector.href)}">Continue with ${escape(connector.label)}</a>`,
     )
     .join("\n");
+  const released = [
+    "a stable id",
+    ...(args.scopes.includes("profile") ? ["your name and picture"] : []),
+    ...(args.scopes.includes("email") ? ["your verified email address"] : []),
+  ];
+  const list =
+    released.length <= 2
+      ? released.join(" and ")
+      : `${released.slice(0, -1).join(", ")}, and ${released.slice(-1).join("")}`;
   const consent = args.firstParty
     ? ""
-    : `<p class="muted">${escape(args.appName)} will receive your identity from the provider you choose: a stable id, your name, and your verified email address.</p>`;
+    : `<p class="muted">${escape(args.appName)} will receive your identity from the provider you choose: ${list}.</p>`;
   const deny = args.firstParty
     ? ""
     : `<p><a href="${escape(args.denyHref)}">Cancel and return to ${escape(args.appName)}</a></p>`;

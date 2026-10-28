@@ -41,13 +41,18 @@ describe("registration", () => {
     deployment_type: "preview",
   };
 
-  test("accepts one redirect URI and the extension field", () => {
+  test("accepts one redirect URI and the extension field; Basic is the default method", () => {
     const result = validateRegistration(good);
     expect(result.ok).toBe(true);
     if (result.ok) {
-      expect(result.value.tokenEndpointAuthMethod).toBe("client_secret_post");
+      expect(result.value.tokenEndpointAuthMethod).toBe("client_secret_basic");
       expect(result.value.deploymentType).toBe("preview");
     }
+    const post = validateRegistration({
+      ...good,
+      token_endpoint_auth_method: "client_secret_post",
+    });
+    expect(post.ok && post.value.tokenEndpointAuthMethod).toBe("client_secret_post");
   });
 
   test("rejects two redirect URIs, bad types, other grants", () => {
@@ -119,6 +124,15 @@ describe("authorize", () => {
       target,
     );
     expect(mixed.ok).toBe(false);
+    for (const prompt of ["consent", "login select_account"]) {
+      expect(validateAuthorizeRest(new URLSearchParams({ ...base, prompt }), target)).toMatchObject(
+        {
+          ok: false,
+          error: "invalid_request",
+          description: "prompt value not supported",
+        },
+      );
+    }
   });
 });
 
@@ -133,6 +147,24 @@ describe("token", () => {
     expect(basic.ok && basic.value.clientSecret).toBe("b:c");
     expect(readClientAuthentication("Bearer x", new URLSearchParams()).ok).toBe(false);
     expect(readClientAuthentication(null, new URLSearchParams({ client_id: "a" })).ok).toBe(false);
+  });
+
+  test("one method, no repeated parameter, and a malformed Basic header is invalid_client", () => {
+    expect(
+      readClientAuthentication(
+        `Basic ${btoa("a:b")}`,
+        new URLSearchParams({ client_id: "a", client_secret: "b" }),
+      ),
+    ).toMatchObject({ ok: false, status: 400, error: "invalid_request" });
+    expect(
+      readClientAuthentication(
+        null,
+        new URLSearchParams("client_id=a&client_secret=b&code=1&code=2"),
+      ),
+    ).toMatchObject({ ok: false, status: 400, error: "invalid_request" });
+    expect(
+      readClientAuthentication(`Basic ${btoa("a:%E0%A4%A")}`, new URLSearchParams()),
+    ).toMatchObject({ ok: false, status: 401, error: "invalid_client" });
   });
 
   test("authorization_code only, with a verifier", () => {

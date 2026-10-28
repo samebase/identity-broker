@@ -39,6 +39,7 @@ export const create = mutation({
     nonce: optional(string()),
     codeChallenge: string(),
     freshLogin: boolean(),
+    txnCookieHash: optional(string()),
     createdAt: number(),
     expiresAt: number(),
   },
@@ -55,6 +56,7 @@ export const create = mutation({
       ...optionalField("nonce", args.nonce),
       codeChallenge: args.codeChallenge,
       freshLogin: args.freshLogin,
+      ...optionalField("txnCookieHash", args.txnCookieHash),
       createdAt: args.createdAt,
       expiresAt: args.expiresAt,
     });
@@ -131,18 +133,19 @@ const vClaimResult = union(
 type ClaimResult = Infer<typeof vClaimResult>;
 
 /**
- * The connector callback arrived with its state. Claiming moves the request to `claimed` in the
- * same mutation that finds it, so a replayed or raced callback finds nothing to claim.
+ * The callback of `connector` arrived with its state. Claiming moves the request to `claimed` in
+ * the same mutation that finds it, so a replayed or raced callback finds nothing to claim. A
+ * request started for another connector is not claimed: its state cannot finish elsewhere.
  */
 export const claimUpstream = mutation({
-  args: { upstreamStateHash: string(), now: number() },
+  args: { upstreamStateHash: string(), connector: string(), now: number() },
   returns: vClaimResult,
   handler: async (ctx, args): Promise<ClaimResult> => {
     const request = await ctx.db
       .query("authRequests")
       .withIndex("by_upstream_state_hash", (q) => q.eq("upstreamStateHash", args.upstreamStateHash))
       .unique();
-    if (request === null || request.status !== "upstream") {
+    if (request === null || request.status !== "upstream" || request.connector !== args.connector) {
       return { status: "missing" };
     }
     const back = returnTo(request);
@@ -173,6 +176,8 @@ const EMAIL_SENDS_PER_REQUEST = 3;
 const EMAIL_SEND_INTERVAL_MS = 60 * 1000;
 /** Codes one address may receive in `EMAIL_SEND_WINDOW_MS`, across all requests. */
 const EMAIL_SENDS_PER_ADDRESS = 5;
+/** Codes the broker sends in `EMAIL_SEND_WINDOW_MS`, across all addresses. */
+const EMAIL_SENDS_GLOBAL = 200;
 /** The rolling window of the per-address count; `lifecycle.cleanup` drops older `emailSends` rows. */
 export const EMAIL_SEND_WINDOW_MS = 60 * 60 * 1000;
 
@@ -183,9 +188,11 @@ const vStartEmailResult = union(
     error: union(
       literal("expired"),
       literal("wrong_status"),
+      literal("locked"),
       literal("too_soon"),
       literal("request_limit"),
       literal("address_limit"),
+      literal("global_limit"),
     ),
     ...vReturn.fields,
   }),
@@ -195,9 +202,10 @@ type StartEmailResult = Infer<typeof vStartEmailResult>;
 
 /**
  * The user chose the email connector and typed an address; a code may be sent to it. A request
- * sends at most `EMAIL_SENDS_PER_REQUEST` codes, `EMAIL_SEND_INTERVAL_MS` apart, and an address
- * receives at most `EMAIL_SENDS_PER_ADDRESS` codes per `EMAIL_SEND_WINDOW_MS`. A resend replaces
- * the code and keeps the attempt count.
+ * sends at most `EMAIL_SENDS_PER_REQUEST` codes, `EMAIL_SEND_INTERVAL_MS` apart, an address
+ * receives at most `EMAIL_SENDS_PER_ADDRESS` codes per `EMAIL_SEND_WINDOW_MS`, and the broker sends
+ * at most `EMAIL_SENDS_GLOBAL` in that window. A resend replaces the code and keeps the attempt
+ * count, so a request locked by `maxAttempts` wrong codes stays locked.
  */
 export const startEmail = mutation({
   args: {
@@ -208,6 +216,7 @@ export const startEmail = mutation({
     emailHash: string(),
     emailCodeHash: string(),
     emailCodeExpiresAt: number(),
+    maxAttempts: number(),
     now: number(),
   },
   returns: vStartEmailResult,
@@ -231,6 +240,9 @@ export const startEmail = mutation({
             attempts: request.emailAttempts,
           }
         : { sends: 0, lastSentAt: undefined, attempts: 0 };
+    if (sent.attempts >= args.maxAttempts) {
+      return { ok: false, error: "locked", ...back };
+    }
     if (sent.sends >= EMAIL_SENDS_PER_REQUEST) {
       return { ok: false, error: "request_limit", ...back };
     }
@@ -245,6 +257,13 @@ export const startEmail = mutation({
       .take(EMAIL_SENDS_PER_ADDRESS);
     if (recentToAddress.length >= EMAIL_SENDS_PER_ADDRESS) {
       return { ok: false, error: "address_limit", ...back };
+    }
+    const recent = await ctx.db
+      .query("emailSends")
+      .withIndex("by_at", (q) => q.gt("at", args.now - EMAIL_SEND_WINDOW_MS))
+      .take(EMAIL_SENDS_GLOBAL);
+    if (recent.length >= EMAIL_SENDS_GLOBAL) {
+      return { ok: false, error: "global_limit", ...back };
     }
     await ctx.db.insert("emailSends", { emailHash: args.emailHash, at: args.now });
     await ctx.db.replace("authRequests", request._id, {
@@ -320,6 +339,7 @@ export const verifyEmailCode = mutation({
     await ctx.db.replace("authRequests", request._id, {
       status: "completed",
       ...baseFields(request),
+      expiresAt: completedExpiresAt(request, args.codeExpiresAt),
       identity: {
         connector: request.connector,
         upstreamId: request.email,
@@ -364,6 +384,7 @@ export const complete = mutation({
     await ctx.db.replace("authRequests", request._id, {
       status: "completed",
       ...baseFields(request),
+      expiresAt: completedExpiresAt(request, args.codeExpiresAt),
       identity: args.identity,
       authTime: args.authTime,
     });
@@ -469,6 +490,14 @@ function optionalField<K extends string, T>(key: K, value: T | undefined) {
   return value === undefined ? {} : ({ [key]: value } as { [P in K]: T });
 }
 
+/**
+ * A completed request outlives its authorization code by a minute, so `lifecycle.cleanup` never
+ * deletes the request while its code can still be redeemed.
+ */
+function completedExpiresAt(request: Doc<"authRequests">, codeExpiresAt: number) {
+  return Math.max(request.expiresAt, codeExpiresAt + 60 * 1000);
+}
+
 function returnTo(request: Doc<"authRequests">) {
   return { redirectUri: request.redirectUri, ...optionalField("state", request.state) };
 }
@@ -488,6 +517,7 @@ function baseFields(request: Doc<"authRequests">) {
     ...optionalField("nonce", request.nonce),
     codeChallenge: request.codeChallenge,
     freshLogin: request.freshLogin,
+    ...optionalField("txnCookieHash", request.txnCookieHash),
     createdAt: request.createdAt,
     expiresAt: request.expiresAt,
   };

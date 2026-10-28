@@ -40,12 +40,17 @@ describe("upstream path", () => {
 
     const claim = await t.mutation(api.authRequests.claimUpstream, {
       upstreamStateHash: "sh",
+      connector: "github",
       now,
     });
     expect(claim.status).toBe("claimed");
     // The claim is single use.
     expect(
-      await t.mutation(api.authRequests.claimUpstream, { upstreamStateHash: "sh", now }),
+      await t.mutation(api.authRequests.claimUpstream, {
+        upstreamStateHash: "sh",
+        connector: "github",
+        now,
+      }),
     ).toEqual({ status: "missing" });
     // A claimed request cannot restart.
     const restart = await t.mutation(api.authRequests.startUpstream, {
@@ -120,9 +125,83 @@ describe("upstream path", () => {
       now,
     });
     expect(
-      await t.mutation(api.authRequests.claimUpstream, { upstreamStateHash: "sh", now: late }),
+      await t.mutation(api.authRequests.claimUpstream, {
+        upstreamStateHash: "sh",
+        connector: "g",
+        now: late,
+      }),
     ).toEqual({ status: "expired", redirectUri: "https://app.test/cb", state: "s" });
     expect(await t.query(api.authRequests.get, { requestId: "r1" })).toBeNull();
+  });
+
+  test("another connector's callback cannot claim the request", async () => {
+    const t = await pendingRequest();
+    await t.mutation(api.authRequests.startUpstream, {
+      requestId: "r1",
+      connector: "google",
+      upstreamStateHash: "sh",
+      upstreamCodeVerifier: "v",
+      upstreamNonce: "n",
+      now,
+    });
+    expect(
+      await t.mutation(api.authRequests.claimUpstream, {
+        upstreamStateHash: "sh",
+        connector: "github",
+        now,
+      }),
+    ).toEqual({ status: "missing" });
+    expect(await t.query(api.authRequests.get, { requestId: "r1" })).toMatchObject({
+      status: "upstream",
+    });
+    expect(
+      await t.mutation(api.authRequests.claimUpstream, {
+        upstreamStateHash: "sh",
+        connector: "google",
+        now,
+      }),
+    ).toMatchObject({ status: "claimed", connector: "google", upstreamNonce: "n" });
+  });
+
+  test("a completed request outlives its code, so cleanup keeps it until the code is gone", async () => {
+    const t = await pendingRequest();
+    // The request expires at now + 600_000; the user finishes just before that.
+    const late = now + 599_000;
+    await t.mutation(api.authRequests.startUpstream, {
+      requestId: "r1",
+      connector: "g",
+      upstreamStateHash: "sh",
+      upstreamCodeVerifier: "v",
+      now: late,
+    });
+    await t.mutation(api.authRequests.claimUpstream, {
+      upstreamStateHash: "sh",
+      connector: "g",
+      now: late,
+    });
+    await t.mutation(api.authRequests.complete, {
+      requestId: "r1",
+      identity: { connector: "g", upstreamId: "1" },
+      authTime: late,
+      codeHash: "ch",
+      codeExpiresAt: late + 60_000,
+      now: late,
+    });
+    const cleanup = (at: number) =>
+      t.mutation(api.lifecycle.cleanup, {
+        now: at,
+        previewClientMaxAgeMs: 30 * 86_400_000,
+        signInRetentionMs: 90 * 86_400_000,
+      });
+    expect(await cleanup(late + 59_000)).toMatchObject({ authRequests: 0 });
+    expect(
+      await t.mutation(api.authRequests.exchangeCode, {
+        codeHash: "ch",
+        clientId: "cl",
+        codeVerifier: verifier,
+        now: late + 59_000,
+      }),
+    ).toMatchObject({ ok: true });
   });
 
   test("an expired code is refused", async () => {
@@ -134,7 +213,11 @@ describe("upstream path", () => {
       upstreamCodeVerifier: "v",
       now,
     });
-    await t.mutation(api.authRequests.claimUpstream, { upstreamStateHash: "sh", now });
+    await t.mutation(api.authRequests.claimUpstream, {
+      upstreamStateHash: "sh",
+      connector: "g",
+      now,
+    });
     await t.mutation(api.authRequests.complete, {
       requestId: "r1",
       identity: { connector: "g", upstreamId: "1" },
@@ -162,6 +245,7 @@ describe("email path", () => {
     emailHash: "hash-of-a@b.co",
     emailCodeHash: "good",
     emailCodeExpiresAt: now + 600_000,
+    maxAttempts: 3,
     now,
   };
   const verifyFor = (t: Awaited<ReturnType<typeof pendingRequest>>) => (emailCodeHash: string) =>
@@ -207,6 +291,10 @@ describe("email path", () => {
     ).toMatchObject({ ok: true });
     expect(await verify("bad")).toMatchObject({ ok: false, error: "locked" });
     expect(await verify("fresh")).toMatchObject({ ok: false, error: "locked" });
+    // A locked request sends no more codes.
+    expect(
+      await t.mutation(api.authRequests.startEmail, { ...start, now: now + 120_000 }),
+    ).toMatchObject({ ok: false, error: "locked" });
   });
 
   test("a second send inside 60 seconds is refused", async () => {
@@ -252,6 +340,23 @@ describe("email path", () => {
     });
     // The count is per address: another address still receives a code.
     expect(await send("r2", now + 300_000, "hash-of-c@d.co")).toMatchObject({ ok: true });
+  });
+
+  test("a send beyond 200 per hour across all addresses is refused", async () => {
+    const t = await pendingRequest();
+    await t.run(async (ctx) => {
+      for (let index = 0; index < 200; index++) {
+        await ctx.db.insert("emailSends", { emailHash: `hash-${index}`, at: now - 3_599_000 });
+      }
+    });
+    expect(await t.mutation(api.authRequests.startEmail, start)).toMatchObject({
+      ok: false,
+      error: "global_limit",
+    });
+    // The rows leave the window an hour after they were written.
+    expect(
+      await t.mutation(api.authRequests.startEmail, { ...start, now: now + 1_000 }),
+    ).toMatchObject({ ok: true });
   });
 
   test("an expired code asks for a new one", async () => {

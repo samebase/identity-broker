@@ -186,6 +186,9 @@ const register = (issuer: string, props: ClientProps) =>
             client_name: props.clientName,
             software_version: props.softwareVersion,
             deployment_type: props.deploymentType,
+            // Convex Auth's generic OAuth method posts the client credentials in the body; the
+            // RFC 7591 default is client_secret_basic.
+            token_endpoint_auth_method: "client_secret_post",
           }),
           redirect: "error",
           signal: AbortSignal.timeout(15_000),
