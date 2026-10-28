@@ -1,5 +1,7 @@
 import { v } from "convex/values";
-import { mutation, query } from "./_generated/server";
+import { internal } from "./_generated/api";
+import { internalMutation, mutation, query, type MutationCtx } from "./_generated/server";
+import { BATCH } from "./lifecycle";
 
 const { array, boolean, number, object, string } = v;
 
@@ -96,35 +98,59 @@ export const setAllowedCallbackHosts = mutation({
 });
 
 /**
- * Deletes an app with its registration tokens and clients. This is the emergency revocation:
- * every deployment of the app stops being able to start or finish a sign-in at once.
+ * Deletes one batch of an app's registration tokens and clients. A table that filled its batch may
+ * hold more, so the batch schedules the next one; the batch that fills neither deletes the app row.
+ * The app row goes last, so a call for an app that is still being deleted finds it and continues.
+ */
+async function removeBatch(ctx: MutationCtx, appId: string): Promise<void> {
+  const app = await ctx.db
+    .query("apps")
+    .withIndex("by_app_id", (q) => q.eq("appId", appId))
+    .unique();
+  if (app === null) {
+    return;
+  }
+  const tokens = await ctx.db
+    .query("registrationTokens")
+    .withIndex("by_app_id", (q) => q.eq("appId", appId))
+    .take(BATCH);
+  for (const token of tokens) {
+    await ctx.db.delete("registrationTokens", token._id);
+  }
+  const clients = await ctx.db
+    .query("clients")
+    .withIndex("by_app_id", (q) => q.eq("appId", appId))
+    .take(BATCH);
+  for (const client of clients) {
+    await ctx.db.delete("clients", client._id);
+  }
+  if (tokens.length === BATCH || clients.length === BATCH) {
+    await ctx.scheduler.runAfter(0, internal.apps.continueRemove, { appId });
+    return;
+  }
+  await ctx.db.delete("apps", app._id);
+}
+
+/**
+ * Deletes an app with its registration tokens and clients. This is the emergency revocation: a
+ * deleted client can no longer start or finish a sign-in. The first batch deletes up to 200 tokens
+ * and 200 clients at once; an app with more has the rest deleted by batches scheduled right after.
  */
 export const remove = mutation({
   args: { appId: string() },
   returns: v.null(),
   handler: async (ctx, args) => {
-    const app = await ctx.db
-      .query("apps")
-      .withIndex("by_app_id", (q) => q.eq("appId", args.appId))
-      .unique();
-    if (app === null) {
-      return null;
-    }
-    const tokens = await ctx.db
-      .query("registrationTokens")
-      .withIndex("by_app_id", (q) => q.eq("appId", args.appId))
-      .collect();
-    for (const token of tokens) {
-      await ctx.db.delete("registrationTokens", token._id);
-    }
-    const clients = await ctx.db
-      .query("clients")
-      .withIndex("by_app_id", (q) => q.eq("appId", args.appId))
-      .collect();
-    for (const client of clients) {
-      await ctx.db.delete("clients", client._id);
-    }
-    await ctx.db.delete("apps", app._id);
+    await removeBatch(ctx, args.appId);
+    return null;
+  },
+});
+
+/** The next batch of a `remove` call that filled a batch. */
+export const continueRemove = internalMutation({
+  args: { appId: string() },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    await removeBatch(ctx, args.appId);
     return null;
   },
 });

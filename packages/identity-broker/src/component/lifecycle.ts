@@ -5,8 +5,11 @@ import { EMAIL_SEND_WINDOW_MS } from "./authRequests";
 
 const { number, object, optional } = v;
 
-/** How many documents one batch deletes per table, so a batch stays well inside one transaction. */
-const BATCH = 200;
+/**
+ * How many documents one batch deletes per table, so a batch stays well inside one transaction.
+ * `apps.remove` deletes an app's tokens and clients in batches of the same size.
+ */
+export const BATCH = 200;
 
 const vCleanupArgs = object({
   now: number(),

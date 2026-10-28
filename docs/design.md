@@ -33,6 +33,10 @@ learns nothing about another app's clients. The delete has the shape of RFC 7592
 does not implement: no registration access token per client, and a missing client answers 404 rather
 than 401.
 
+`deleteApp` deletes an app's registration tokens and clients in batches of 200 per table, each
+scheduling the next at once, and the app row after the last batch. An app with up to 200 clients
+loses them all in the first transaction.
+
 ## Email send limits
 
 A request sends at most 3 codes, at least 60 seconds apart; an address receives at most 5 codes per
