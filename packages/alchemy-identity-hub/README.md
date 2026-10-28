@@ -32,7 +32,7 @@ registration token is never an attribute.
 
 Alchemy state stores the props, the registration token included, and the attributes, the client
 secret included. Redacted keeps the token and the secret out of logs; how the state is encrypted is
-up to the state store. Peer dependencies: `alchemy` `2.0.0-beta.80` and `effect` `^4.0.0`.
+up to the state store. Peer dependencies: `alchemy` `2.0.0-beta.84` and `effect` `^4.0.5`.
 
 ## Lifecycle
 
