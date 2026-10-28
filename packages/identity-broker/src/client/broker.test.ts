@@ -4,7 +4,9 @@ import { afterEach, describe, expect, test, vi } from "vite-plus/test";
 import { api } from "../component/_generated/api.js";
 import { email } from "./connectors/email.js";
 import { google } from "./connectors/google.js";
+import { defineIdentityBroker } from "./index.js";
 import {
+  component,
   createHarness,
   fakeOidcUpstream,
   fakeUpstream,
@@ -1165,7 +1167,7 @@ describe("email send limits", () => {
 });
 
 describe("cleanup", () => {
-  test("drops expired requests, codes and tokens, idle preview clients, old audit rows", async () => {
+  test("drops expired requests, codes and tokens and old audit rows; idle preview clients only when asked", async () => {
     const h = await createHarness({ connectors: [fakeUpstream().connector] });
     const now = Date.now();
     await h.t.mutation(api.apps.create, {
@@ -1225,21 +1227,82 @@ describe("cleanup", () => {
       sub: "s",
       at: now - 100 * 86_400_000,
     });
-    const counts = await h.t.mutation(api.lifecycle.cleanup, {
-      now,
-      previewClientMaxAgeMs: 30 * 86_400_000,
-      signInRetentionMs: 90 * 86_400_000,
-    });
-    expect(counts).toEqual({
+    const clientIds = async () =>
+      (await h.t.query(api.clients.listByApp, { appId: "a" })).map((c) => c.clientId).sort();
+    // Without previewClientMaxAgeMs, no client goes, however idle.
+    expect(
+      await h.t.mutation(api.lifecycle.cleanup, { now, signInRetentionMs: 90 * 86_400_000 }),
+    ).toEqual({
       authRequests: 1,
       authorizationCodes: 0,
       registrationTokens: 1,
-      previewClients: 1,
+      previewClients: 0,
       signIns: 1,
       emailSends: 0,
     });
-    const remaining = await h.t.query(api.clients.listByApp, { appId: "a" });
-    expect(remaining.map((c) => c.clientId).sort()).toEqual(["preview-new", "prod-old"]);
+    expect(await clientIds()).toEqual(["preview-new", "preview-old", "prod-old"]);
+    // With it, the preview client idle longer goes; the production client stays.
+    expect(
+      await h.t.mutation(api.lifecycle.cleanup, {
+        now,
+        previewClientMaxAgeMs: 30 * 86_400_000,
+        signInRetentionMs: 90 * 86_400_000,
+      }),
+    ).toEqual({
+      authRequests: 0,
+      authorizationCodes: 0,
+      registrationTokens: 0,
+      previewClients: 1,
+      signIns: 0,
+      emailSends: 0,
+    });
+    expect(await clientIds()).toEqual(["preview-new", "prod-old"]);
+  });
+
+  test("the host's cleanup deletes idle preview clients only with previewClientIdleDays", async () => {
+    for (const previewClientIdleDays of [undefined, 30, 50]) {
+      const h = await createHarness({
+        connectors: [fakeUpstream().connector],
+        ...(previewClientIdleDays === undefined ? {} : { previewClientIdleDays }),
+      });
+      const now = Date.now();
+      await h.t.mutation(api.apps.create, {
+        appId: "a",
+        name: "A",
+        firstParty: true,
+        allowedCallbackHosts: ["app.test"],
+        createdAt: now,
+      });
+      await h.t.mutation(api.clients.create, {
+        clientId: "preview-40-days",
+        appId: "a",
+        secretHash: "h",
+        tokenEndpointAuthMethod: "client_secret_post",
+        redirectUri: REDIRECT_URI,
+        deploymentType: "preview",
+        clientName: "c",
+        softwareVersion: "v",
+        createdAt: now - 40 * 86_400_000,
+      });
+      const { cleanup } = h.broker.admin();
+      // @ts-expect-error internalMutationGeneric keeps the function as _handler; RegisteredMutation does not declare it. Its handler only calls ctx.runMutation, which an action ctx has.
+      const counts = await h.t.action(async (ctx) => await cleanup._handler(ctx, {}));
+      expect(counts).toMatchObject({ previewClients: previewClientIdleDays === 30 ? 1 : 0 });
+    }
+  });
+
+  test("previewClientIdleDays must be a positive number of days", () => {
+    for (const previewClientIdleDays of [0, -1, Number.NaN]) {
+      expect(() =>
+        defineIdentityBroker({
+          component,
+          issuer: ISSUER,
+          keys: () => undefined,
+          connectors: [fakeUpstream().connector],
+          previewClientIdleDays,
+        }),
+      ).toThrow("previewClientIdleDays must be a positive number of days");
+    }
   });
 
   test("one call drains a table that holds more than one batch", async () => {

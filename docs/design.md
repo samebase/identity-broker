@@ -15,6 +15,9 @@ The host schedules the component's `cleanup` daily from a cron, as the
 rows. One run drains: a batch deletes at most 200 rows per table, and a full batch schedules the
 next one at once, up to 50 more batches per run. A completed request lives until one minute after
 its authorization code expires, so cleanup never removes a request whose code can still be redeemed.
+Clients stay until `deleteClient` removes them. A host that sets `previewClientIdleDays` also has
+cleanup delete a preview client with no sign-in for that many days. It is off by default, because a
+deployment whose client was deleted does not register again by itself.
 
 ## Email send limits
 

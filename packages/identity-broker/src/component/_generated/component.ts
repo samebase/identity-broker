@@ -442,7 +442,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         "internal",
         {
           now: number;
-          previewClientMaxAgeMs: number;
+          previewClientMaxAgeMs?: number;
           signInRetentionMs: number;
         },
         {

@@ -32,6 +32,7 @@ export async function createHarness(options: {
   connectors: Connector[];
   issuer?: string;
   keySet?: KeySet;
+  previewClientIdleDays?: number;
   /** Replaces `ctx.runAction` for the request, to capture the email code send. */
   runAction?: (reference: unknown, args: unknown) => Promise<unknown>;
 }) {
@@ -43,6 +44,9 @@ export async function createHarness(options: {
     issuer,
     keys: () => JSON.stringify(keySet),
     connectors: options.connectors,
+    ...(options.previewClientIdleDays === undefined
+      ? {}
+      : { previewClientIdleDays: options.previewClientIdleDays }),
   });
   const http = httpRouter();
   broker.addHttpRoutes(http);

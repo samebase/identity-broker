@@ -68,6 +68,11 @@ export type IdentityBrokerConfig = {
   /** The content of `IDENTITY_BROKER_KEYS`, read in the request. */
   keys: () => string | undefined;
   connectors: Connector[];
+  /**
+   * Days without a sign-in after which `cleanup` deletes a preview client. Absent: `cleanup` deletes
+   * no client, because a deployment whose client was deleted does not register again by itself.
+   */
+  previewClientIdleDays?: number;
 };
 
 /** A request lives this long from /authorize to the code redirect. */
@@ -81,8 +86,7 @@ const EMAIL_MAX_ATTEMPTS = 5;
 /** The scopes the broker grants; any other requested scope is dropped. */
 const SCOPES = ["openid", "email", "profile"];
 const REGISTRATION_TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1000;
-/** Lifecycle values the host's cron passes to `cleanup`. */
-export const PREVIEW_CLIENT_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
+/** How long `cleanup` keeps an audit row of an issued id_token. */
 export const SIGN_IN_RETENTION_MS = 90 * 24 * 60 * 60 * 1000;
 
 type Ctx = GenericActionCtx<GenericDataModel>;
@@ -109,6 +113,11 @@ export function defineIdentityBroker(config: IdentityBrokerConfig) {
   }
   if (connectors.size === 0) {
     throw new Error("At least one connector is required");
+  }
+  const { previewClientIdleDays } = config;
+  // Zero or less would delete every preview client at the next cleanup.
+  if (previewClientIdleDays !== undefined && !(previewClientIdleDays > 0)) {
+    throw new Error("previewClientIdleDays must be a positive number of days");
   }
 
   /** The transaction cookies the browser sent, by request id. */
@@ -1087,7 +1096,9 @@ export function defineIdentityBroker(config: IdentityBrokerConfig) {
           handler: async (ctx) =>
             await ctx.runMutation(component.lifecycle.cleanup, {
               now: Date.now(),
-              previewClientMaxAgeMs: PREVIEW_CLIENT_MAX_AGE_MS,
+              ...(previewClientIdleDays === undefined
+                ? {}
+                : { previewClientMaxAgeMs: previewClientIdleDays * 24 * 60 * 60 * 1000 }),
               signInRetentionMs: SIGN_IN_RETENTION_MS,
             }),
         }),
