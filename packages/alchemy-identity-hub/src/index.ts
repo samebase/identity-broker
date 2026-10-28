@@ -1,16 +1,20 @@
 // IdentityHub.Client: one Convex deployment registered as an OAuth client of an identity hub, an
 // OpenID Provider built with @samebase/identity-broker.
 //
-// The hub implements RFC 7591 registration only: POST <issuer>/register with the app's
-// registration token as a Bearer token answers 201 with a client_id and a client_secret. It has no
-// endpoint to read, change, or delete a client (no RFC 7592), so:
+// The hub registers a client at POST <issuer>/register (RFC 7591), answering 201 with a client_id
+// and a client_secret, and deletes one at DELETE <issuer>/register/<client id>, answering 204. Both
+// take the app's registration token as a Bearer token. It has no endpoint to read or change a
+// client, so:
 // - A changed issuer, redirectUri, or deploymentType replaces the resource: it registers a new
-//   client. The old client stays on the hub. The hub prunes an idle preview client only when its
-//   host sets previewClientIdleDays, and this resource does not register a pruned client again.
-//   The hub keeps a production or development client until the app is deleted there.
-// - A changed clientName, softwareVersion, or registrationToken makes no hub call, and the
-//   attributes stay the ones the client was registered with. The token is used only to register.
-// - read returns the state as it is, and delete makes no hub call.
+//   client, and the replaced client is deleted on the hub.
+// - A changed registrationToken updates the state without a hub call, so a later delete sends the
+//   newest token. A changed clientName or softwareVersion makes no hub call, and the attributes stay
+//   the ones the client was registered with.
+// - read returns the state as it is.
+// - delete deletes the client on the hub. A 404 means it is already gone. A 401 means the token in
+//   state can never delete it: the client stays on the hub, and a warning names the hub command
+//   that deletes it. A network error or any other answer fails the delete, and the resource stays
+//   in state, so the next deploy or destroy tries again.
 // A registration is never retried within one deploy: each request that succeeds creates one more
 // client.
 import { Resource } from "alchemy";
@@ -29,7 +33,10 @@ export interface ClientProps {
    * does: origin plus path, without a trailing slash.
    */
   readonly issuer: string;
-  /** A token from the hub's `mintRegistrationToken` for the app. Used only to register a client. */
+  /**
+   * A token from the hub's `mintRegistrationToken` for the app. It registers the client, and the
+   * token in state at the time deletes it.
+   */
   readonly registrationToken: Redacted.Redacted<string>;
   /** The deployment's callback URL, such as `<deployment site URL>/oauth/hub/callback`. */
   readonly redirectUri: string;
@@ -128,6 +135,20 @@ export class RegistrationFailed extends Schema.TaggedError<RegistrationFailed>()
   }
 }
 
+/**
+ * The hub could not be reached to delete a client, or answered other than 204, 404, or 401. The
+ * resource stays in state, so the next deploy or destroy tries again.
+ */
+export class DeletionFailed extends Schema.TaggedError<DeletionFailed>()("DeletionFailed", {
+  issuer: Schema.String,
+  clientId: Schema.String,
+  reason: Schema.String,
+}) {
+  override get message() {
+    return `Deleting client ${this.clientId} at ${this.issuer}/register/${this.clientId} failed: ${this.reason}. The client stays in state, and the next deploy or destroy tries again.`;
+  }
+}
+
 /** RFC 7591 3.2.1, the fields this resource keeps. */
 const RegisteredClient = Schema.Struct({
   client_id: Schema.NonEmptyString,
@@ -171,6 +192,30 @@ const normalizeIssuer = (issuer: string) =>
     return `${url.origin}${url.pathname.replace(/\/$/, "")}`;
   });
 
+/**
+ * The registration token as a header value. fetch refuses a control character with an error
+ * message that quotes the value, so it is refused here first.
+ */
+const headerToken = (registrationToken: Redacted.Redacted<string>) =>
+  Effect.gen(function* () {
+    const token = Redacted.value(registrationToken);
+    if (CONTROL.test(token)) {
+      return yield* new InvalidProps({ reason: "registrationToken contains a control character" });
+    }
+    return token;
+  });
+
+/**
+ * A failed fetch as local diagnostics. Its message can quote the request, so only its name and its
+ * cause's code are kept, such as `(TypeError, ECONNREFUSED)`.
+ */
+const requestFailure = (cause: unknown) => {
+  const name = cause instanceof Error ? cause.name : "unknown error";
+  const code =
+    cause instanceof Error && Schema.is(ErrorCode)(cause.cause) ? `, ${cause.cause.code}` : "";
+  return `the request failed (${name}${code})`;
+};
+
 /** True when the client in state was registered for `issuer` and the redirect URI and deployment type of `props`. */
 const registeredFor = (output: ClientAttributes, issuer: string, props: ClientProps) =>
   output.issuer === issuer &&
@@ -181,13 +226,8 @@ const registeredFor = (output: ClientAttributes, issuer: string, props: ClientPr
  * One registration. The token goes only into the request header. An error carries local
  * diagnostics only: the status, an error name and code, or a known OAuth error code.
  */
-const register = (issuer: string, props: ClientProps) =>
+const register = (issuer: string, token: string, props: ClientProps) =>
   Effect.gen(function* () {
-    const token = Redacted.value(props.registrationToken);
-    // fetch refuses such a header value with an error message that quotes the value.
-    if (CONTROL.test(token)) {
-      return yield* new InvalidProps({ reason: "registrationToken contains a control character" });
-    }
     const response = yield* Effect.tryPromise({
       try: () =>
         fetch(`${issuer}/register`, {
@@ -208,15 +248,7 @@ const register = (issuer: string, props: ClientProps) =>
           redirect: "error",
           signal: AbortSignal.timeout(15_000),
         }),
-      // The error's message can quote the request, so only its name and its cause's code are kept.
-      catch: (cause) => {
-        const name = cause instanceof Error ? cause.name : "unknown error";
-        const code =
-          cause instanceof Error && Schema.is(ErrorCode)(cause.cause)
-            ? `, ${cause.cause.code}`
-            : "";
-        return new RegistrationFailed({ issuer, reason: `the request failed (${name}${code})` });
-      },
+      catch: (cause) => new RegistrationFailed({ issuer, reason: requestFailure(cause) }),
     });
     if (response.status === 401) {
       return yield* new RegistrationTokenRejected({ issuer });
@@ -251,24 +283,50 @@ const register = (issuer: string, props: ClientProps) =>
     });
   });
 
-/** The info line for a client that this resource no longer tracks. */
-const leaveOnHub = (output: ClientAttributes) =>
-  Effect.logInfo(
-    `Client ${output.clientId} stays registered on ${output.issuer}: the hub has no endpoint to delete it. ${
-      output.deploymentType === "preview"
-        ? "The hub prunes an idle preview client only when its host sets previewClientIdleDays, and this resource does not register a pruned client again."
-        : `The hub keeps a ${output.deploymentType} client until the app is deleted there.`
-    }`,
-  );
+/**
+ * Deletes a client on its hub. 204 deletes it, and 404 means it is already gone. A 401 means the
+ * token is expired or wrong, and the same token never succeeds on a retry, so the client stays on
+ * the hub with a warning. Anything else fails with DeletionFailed. The token goes only into the
+ * request header, and the hub's answer is never read.
+ */
+const unregister = (output: ClientAttributes, token: string) =>
+  Effect.gen(function* () {
+    const { issuer, clientId } = output;
+    const response = yield* Effect.tryPromise({
+      try: () =>
+        fetch(`${issuer}/register/${encodeURIComponent(clientId)}`, {
+          method: "DELETE",
+          headers: { Authorization: `Bearer ${token}` },
+          redirect: "error",
+          signal: AbortSignal.timeout(15_000),
+        }),
+      catch: (cause) => new DeletionFailed({ issuer, clientId, reason: requestFailure(cause) }),
+    });
+    if (response.status === 204 || response.status === 404) return;
+    if (response.status === 401) {
+      return yield* Effect.logWarning(
+        `Client ${clientId} stays registered on ${issuer}: the hub rejected the registration token, which is expired or wrong. Delete the client on the hub with \`npx convex run --prod identityBroker:deleteClient '{"clientId":"${clientId}"}'\`.`,
+      );
+    }
+    return yield* new DeletionFailed({
+      issuer,
+      clientId,
+      reason: `the hub answered ${response.status}`,
+    });
+  });
 
 const ClientProvider = Provider.succeed(Client, {
-  diff: Effect.fn(function* ({ news, output }) {
+  diff: Effect.fn(function* ({ news, olds, output }) {
     // Props that are unresolved at plan time, such as a redirectUri from a deployment that this run
     // creates, are compared in reconcile.
     if (!isResolved(news) || output === undefined) return undefined;
-    return registeredFor(output, yield* normalizeIssuer(news.issuer), news)
+    if (!registeredFor(output, yield* normalizeIssuer(news.issuer), news)) {
+      return { action: "replace" } as const;
+    }
+    // A delete sends the token in state, so a new token is stored by an update with no hub call.
+    return Redacted.value(news.registrationToken) === Redacted.value(olds.registrationToken)
       ? ({ action: "noop" } as const)
-      : ({ action: "replace" } as const);
+      : ({ action: "update" } as const);
   }),
 
   // The hub has no endpoint to read a client, so the state is the only record.
@@ -276,10 +334,13 @@ const ClientProvider = Provider.succeed(Client, {
 
   reconcile: Effect.fn(function* ({ news, output }) {
     const issuer = yield* normalizeIssuer(news.issuer);
+    // Checked even when nothing registers: the token is stored for a later delete.
+    const token = yield* headerToken(news.registrationToken);
     if (output !== undefined && registeredFor(output, issuer, news)) return output;
-    const { clientId, clientSecret } = yield* register(issuer, news);
-    // An update whose props were unresolved at plan time registers in place of a replacement.
-    if (output !== undefined) yield* leaveOnHub(output);
+    const { clientId, clientSecret } = yield* register(issuer, token, news);
+    // An update whose props were unresolved at plan time registers in place of a replacement, so
+    // it deletes the client it replaces, as a replacement's delete does.
+    if (output !== undefined) yield* unregister(output, token);
     return {
       issuer,
       redirectUri: news.redirectUri,
@@ -290,7 +351,7 @@ const ClientProvider = Provider.succeed(Client, {
     };
   }),
 
-  delete: ({ output }) => leaveOnHub(output),
+  delete: ({ olds, output }) => unregister(output, Redacted.value(olds.registrationToken)),
 });
 
 export class Providers extends Provider.ProviderCollection<Providers>()("IdentityHub") {}

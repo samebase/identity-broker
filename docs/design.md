@@ -21,7 +21,9 @@ can still be redeemed.
 Clients stay until `DELETE /register/<client_id>` or `deleteClient` removes them, or their app is
 deleted. A host that sets `previewClientIdleDays` also has cleanup delete a preview client with no
 sign-in for that many days. It is off by default, because a deployment whose client was deleted does
-not register again by itself.
+not register again by itself. A deployment that deletes its own client when it goes away, as
+`IdentityHub.Client` of `@samebase/alchemy-identity-hub` does on destroy since 0.3.0, leaves no idle
+client behind, so pruning has no reason to run for it.
 
 ## Registration
 

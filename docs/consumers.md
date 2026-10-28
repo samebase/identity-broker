@@ -61,7 +61,8 @@ curl -sS -X DELETE "$HUB/register/$HUB_CLIENT_ID" -H "Authorization: Bearer $HUB
 ```
 
 In an Alchemy v2 stack, the `IdentityHub.Client` resource of `@samebase/alchemy-identity-hub` makes
-this request at deploy time, and `Convex.EnvironmentVariable` stores the client on the deployment.
+these requests: it registers at deploy time and deletes on destroy. `Convex.EnvironmentVariable`
+stores the client on the deployment.
 
 The `connector` query parameter on `/authorize` (`connector=github`) skips the chooser for a
 first-party app. Each app sees its own pairwise `sub`; the `email` claim is the app's to use or not.

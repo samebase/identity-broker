@@ -70,7 +70,9 @@ export type IdentityBrokerConfig = {
   connectors: Connector[];
   /**
    * Days without a sign-in after which `cleanup` deletes a preview client. Absent: `cleanup` deletes
-   * no client, because a deployment whose client was deleted does not register again by itself.
+   * no client, because a deployment whose client was deleted does not register again by itself. A
+   * deployment that deletes its own client when it goes away (`DELETE /register/<client_id>`, as
+   * `@samebase/alchemy-identity-hub` does on destroy) leaves nothing idle to prune.
    */
   previewClientIdleDays?: number;
 };
