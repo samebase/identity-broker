@@ -39,14 +39,15 @@ the key set: a lost salt cannot be recreated.
 - No sessions at the broker: `prompt=none` returns `login_required`; there is no logout protocol.
 - `response_type=code` only, so the "dynamic OP" profile of OIDC Core 15.2 is not met.
 - `max_age` is honored only as a fresh login: `prompt=login` or any `max_age` sends `prompt=login`
-  to an OIDC connector whose provider documents that value, and the email code always satisfies it.
-  A provider can still reuse its session, so the OIDC sign-in completes only when the provider's
-  id_token carries an `auth_time` no earlier than the second the request was created; a missing or
-  older `auth_time` answers `login_required`. A connector that cannot reauthenticate answers
-  `login_required` before anything goes upstream: a plain OAuth connector such as GitHub, which has
-  no `auth_time` to check, and Google, which documents no `login` value for `prompt`. A freshness
-  request against these is refused rather than pretended. Other `prompt` values, such as `consent`
-  and `select_account`, answer `invalid_request`.
+  and `max_age=0` to an OIDC connector whose provider documents `prompt=login`, and the email code
+  always satisfies it. `max_age` obliges the provider to return `auth_time` (OIDC Core 3.1.2.1), and
+  a provider can still reuse its session, so the OIDC sign-in completes only when that `auth_time`
+  falls between the second the request was created and now, each widened by 60 seconds of clock
+  skew; a missing, older, or later `auth_time` answers `login_required`. A connector that cannot
+  reauthenticate answers `login_required` before anything goes upstream: a plain OAuth connector
+  such as GitHub, which has no `auth_time` to check, and Google, which documents no `login` value
+  for `prompt`. A freshness request against these is refused rather than pretended. Other `prompt`
+  values, such as `consent` and `select_account`, answer `invalid_request`.
 - Pairwise subjects use the app, not a `sector_identifier_uri`, as the sector, so previews on random
   hosts keep the same subjects.
 - Dynamically registered clients inherit the trust of their app: a first-party app's deployments
@@ -56,7 +57,7 @@ the key set: a lost salt cannot be recreated.
 - Email codes have no standard; the result is `email_verified: true`, no `amr`.
 - `auth_time` is the hub's completion time: when the broker completed the sign-in, after the
   connector answered. After a fresh login through an OIDC connector it is the provider's `auth_time`
-  instead, which the broker checked against the request's creation. The broker never compares an
+  instead, which the broker checked against the request's lifetime. The broker never compares an
   upstream `auth_time` with the value of `max_age`.
 - A replayed authorization code revokes the code and its request, but nothing already issued: an
   access token for `/userinfo` keeps its five minutes.

@@ -80,6 +80,8 @@ const AUTH_REQUEST_TTL_MS = 10 * 60 * 1000;
 /** A code is redeemed by the client's callback at once. */
 const CODE_TTL_MS = 60 * 1000;
 const EMAIL_CODE_TTL_MS = 10 * 60 * 1000;
+/** How far an upstream `auth_time` may sit outside the request's lifetime: the clocks differ. */
+const AUTH_TIME_SKEW_SECONDS = 60;
 const EMAIL_MAX_ATTEMPTS = 5;
 /** The scopes the broker grants; any other requested scope is dropped. */
 const SCOPES = ["openid", "email", "profile"];
@@ -534,12 +536,16 @@ export function defineIdentityBroker(config: IdentityBrokerConfig) {
       }
       let authTime = now;
       if (claim.freshLogin) {
-        // prompt=login went upstream, but a provider can still reuse its session; only the
-        // id_token's auth_time attests a login during this request. auth_time is in whole seconds,
-        // so the request's creation counts from the start of its second. A plain OAuth connector
-        // has no auth_time, and startConnector already refused it.
+        // prompt=login and max_age=0 went upstream, but a provider can still reuse its session;
+        // only the id_token's auth_time attests a login during this request. It must fall between
+        // the request's creation and now, each widened by the clock skew; auth_time is in whole
+        // seconds. A plain OAuth connector has no auth_time, and startConnector already refused it.
         const { authTimeSeconds } = upstream;
-        if (authTimeSeconds === undefined || authTimeSeconds < Math.floor(claim.createdAt / 1000)) {
+        if (
+          authTimeSeconds === undefined ||
+          authTimeSeconds < Math.floor(claim.createdAt / 1000) - AUTH_TIME_SKEW_SECONDS ||
+          authTimeSeconds > Math.floor(now / 1000) + AUTH_TIME_SKEW_SECONDS
+        ) {
           await ctx.runMutation(component.authRequests.abandon, { requestId: claim.requestId });
           return authorizationError({
             ...back,

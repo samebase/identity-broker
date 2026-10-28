@@ -471,6 +471,7 @@ describe("authorization code flow with an OAuth connector", () => {
     expect(back.status).toBe(302);
     return {
       prompt: upstream.searchParams.get("prompt"),
+      maxAge: upstream.searchParams.get("max_age"),
       location: new URL(back.headers.get("location") ?? ""),
       verifier,
       requestId: stored.requestId,
@@ -478,7 +479,9 @@ describe("authorization code flow with an OAuth connector", () => {
     };
   }
 
-  test("a fresh login completes only when the upstream auth_time is not before the request", async () => {
+  test("a fresh login completes only with an upstream auth_time inside the request, give or take 60 seconds", async () => {
+    // The clock stands still, so the request is created and its callback runs in one second.
+    vi.useFakeTimers({ now: 1_800_000_000_500, toFake: ["Date"] });
     const idp = await fakeOidcUpstream();
     const h = await createHarness({ connectors: [idp.connector] });
     const { clientId, clientSecret } = await h.registerClient({
@@ -486,17 +489,27 @@ describe("authorization code flow with an OAuth connector", () => {
       firstParty: true,
       redirectUri: REDIRECT_URI,
     });
-    // Both ways to ask for a fresh login, against an upstream auth_time that is missing, one second
-    // before the request's second, in it, or one second after it.
+    // Both ways to ask for a fresh login, against an upstream auth_time that is missing, or this
+    // many seconds from the request's second: past each edge of the 60-second skew, on it, inside.
+    const accepted = new Map([
+      [-61, false],
+      [-60, true],
+      [-1, true],
+      [0, true],
+      [60, true],
+      [61, false],
+    ]);
     for (const extra of [{ prompt: "login" }, { max_age: "300" }]) {
-      for (const offset of [undefined, -1, 0, 1]) {
+      for (const offset of [undefined, ...accepted.keys()]) {
         const signIn = await oidcSignIn(h, idp, {
           clientId,
           extra,
           authTime: (created) => (offset === undefined ? undefined : created + offset),
         });
+        expect(signIn.createdSecond).toBe(1_800_000_000);
         expect(signIn.prompt).toBe("login");
-        if (offset === undefined || offset < 0) {
+        expect(signIn.maxAge).toBe("0");
+        if (offset === undefined || !accepted.get(offset)) {
           expect(signIn.location.origin + signIn.location.pathname).toBe(REDIRECT_URI);
           expect(signIn.location.searchParams.get("error")).toBe("login_required");
           expect(signIn.location.searchParams.get("error_description")).toBe(
@@ -537,6 +550,7 @@ describe("authorization code flow with an OAuth connector", () => {
         authTime: (created) => (offset === undefined ? undefined : created + offset),
       });
       expect(signIn.prompt).toBeNull();
+      expect(signIn.maxAge).toBeNull();
       const code = signIn.location.searchParams.get("code") ?? "";
       expect(code).not.toBe("");
       const tokens = await exchange(h, { code, clientId, clientSecret, verifier: signIn.verifier });

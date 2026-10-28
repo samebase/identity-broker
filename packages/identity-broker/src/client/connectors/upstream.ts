@@ -59,7 +59,10 @@ export async function startUpstream(args: {
     url.searchParams.set("nonce", nonce);
   }
   if (args.freshLogin && args.connector.kind === "oidc") {
+    // With max_age the provider must return auth_time (OIDC Core 3.1.2.1), which the callback
+    // checks; prompt=login asks for the login itself.
     url.searchParams.set("prompt", "login");
+    url.searchParams.set("max_age", "0");
   }
   return { url: url.toString(), state, codeVerifier, nonce };
 }

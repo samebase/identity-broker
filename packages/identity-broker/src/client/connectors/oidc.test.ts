@@ -99,6 +99,7 @@ test("start carries PKCE and nonce; finish validates the signed id_token and rea
   expect(url.searchParams.get("code_challenge_method")).toBe("S256");
   expect(url.searchParams.get("nonce")).toBe(start.nonce);
   expect(url.searchParams.get("prompt")).toBe("login");
+  expect(url.searchParams.get("max_age")).toBe("0");
 
   provider.setNonce(start.nonce);
   const current = new URL(`${CALLBACK}?code=idp-code&state=${encodeURIComponent(start.state)}`);
@@ -125,6 +126,7 @@ test("an id_token without auth_time finishes with no authentication time", async
   const provider = await fakeProvider();
   const start = await startUpstream({ connector, callbackUrl: CALLBACK, freshLogin: false });
   expect(new URL(start.url).searchParams.get("prompt")).toBeNull();
+  expect(new URL(start.url).searchParams.get("max_age")).toBeNull();
   provider.setNonce(start.nonce);
   const finish = await finishUpstream({
     connector,
