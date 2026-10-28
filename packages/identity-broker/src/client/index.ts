@@ -914,23 +914,13 @@ export function defineIdentityBroker(config: IdentityBrokerConfig) {
     if (!validation.ok) {
       return oauthError(validation.status, validation.error, validation.description);
     }
-    const client = await ctx.runQuery(component.clients.get, {
-      clientId: clientAuth.value.clientId,
-    });
-    // A client whose app is deleted is refused at once: deleteApp deletes the app row first and
-    // the app's clients in later batches.
-    if (
-      client === null ||
-      client.tokenEndpointAuthMethod !== clientAuth.value.method ||
-      client.secretHash !== (await sha256Hex(clientAuth.value.clientSecret)) ||
-      (await readApp(ctx, client.appId)) === null
-    ) {
-      return oauthError(401, "invalid_client", "Client authentication failed.", challenge);
-    }
     const now = Date.now();
+    // The client is authenticated in the transaction that redeems the code.
     const exchange = await ctx.runMutation(component.authRequests.exchangeCode, {
+      clientId: clientAuth.value.clientId,
+      clientSecretHash: await sha256Hex(clientAuth.value.clientSecret),
+      tokenEndpointAuthMethod: clientAuth.value.method,
       codeHash: await sha256Hex(validation.value.code),
-      clientId: client.clientId,
       ...(validation.value.redirectUri === undefined
         ? {}
         : { redirectUri: validation.value.redirectUri }),
@@ -938,7 +928,9 @@ export function defineIdentityBroker(config: IdentityBrokerConfig) {
       now,
     });
     if (!exchange.ok) {
-      return oauthError(400, "invalid_grant", exchange.description);
+      return exchange.error === "invalid_client"
+        ? oauthError(401, "invalid_client", exchange.description, challenge)
+        : oauthError(400, "invalid_grant", exchange.description);
     }
     const keys = keySet();
     const sub = await pairwiseSubject({
@@ -964,16 +956,16 @@ export function defineIdentityBroker(config: IdentityBrokerConfig) {
       signIdToken({
         keySet: keys,
         issuer,
-        clientId: client.clientId,
+        clientId: exchange.clientId,
         claims,
         authTime: exchange.authTime,
         nonce: exchange.nonce,
       }),
-      signAccessToken({ keySet: keys, issuer, clientId: client.clientId, claims }),
+      signAccessToken({ keySet: keys, issuer, clientId: exchange.clientId, claims }),
     ]);
     await ctx.runMutation(component.signIns.record, {
       appId: exchange.appId,
-      clientId: client.clientId,
+      clientId: exchange.clientId,
       connector: exchange.identity.connector,
       sub,
       at: now,

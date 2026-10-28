@@ -784,41 +784,72 @@ describe("authorization code flow with an OAuth connector", () => {
     ).toEqual({ error: "server_error", description: "Fake sign-in failed." });
   });
 
-  test("a failed Basic authentication answers 401 with a Basic challenge", async () => {
+  test("a client authenticates by the method it registered, and by one method only", async () => {
     const h = await createHarness({ connectors: [fakeUpstream().connector] });
-    const { clientId, clientSecret } = await h.registerClient({
+    const posting = await h.registerClient({
       appName: "Bristol",
       firstParty: true,
       redirectUri: REDIRECT_URI,
     });
-    const { verifier } = await pkce();
-    const body = new URLSearchParams({
-      grant_type: "authorization_code",
-      code: "c",
-      code_verifier: verifier,
-    }).toString();
-    const post = (headers: Record<string, string>, form = body) =>
+    // Registered without token_endpoint_auth_method: client_secret_basic (RFC 7591 section 2).
+    const basicClient = await (
+      await h.fetchBroker(`${ISSUER}/register`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${posting.token}`, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          redirect_uris: [REDIRECT_URI],
+          client_name: "Bristol preview",
+          deployment_type: "preview",
+        }),
+      })
+    ).json();
+    const clientId = String(basicClient.client_id);
+    const clientSecret = String(basicClient.client_secret);
+    const basic = (id: string, secret: string) => `Basic ${btoa(`${id}:${secret}`)}`;
+    const { verifier, challenge } = await pkce();
+    const back = await completeUpstream(
+      h,
+      await h.fetchBroker(authorizeUrl(h, { clientId, challenge })),
+    );
+    const code = new URL(back.headers.get("location") ?? "").searchParams.get("code") ?? "";
+    const redeem = (headers: Record<string, string>, credentials: Record<string, string>) =>
       h.fetchBroker(`${ISSUER}/token`, {
         method: "POST",
         headers: { "Content-Type": "application/x-www-form-urlencoded", ...headers },
-        body: form,
+        body: new URLSearchParams({
+          grant_type: "authorization_code",
+          code,
+          code_verifier: verifier,
+          ...credentials,
+        }).toString(),
       });
+
+    // RFC 6749 section 2.3.1: one method per request. The right Basic header with the right body
+    // credentials is refused, though the header alone succeeds below.
+    const both = await redeem(
+      { Authorization: basic(clientId, clientSecret) },
+      { client_id: clientId, client_secret: clientSecret },
+    );
+    expect(both.status).toBe(400);
+    expect((await both.json()).error).toBe("invalid_request");
+    // A wrong or malformed header, or the header of a client registered for the body, is a 401
+    // with a Basic challenge.
     for (const authorization of [
-      // The client registered for client_secret_post.
-      `Basic ${btoa(`${clientId}:${clientSecret}`)}`,
+      basic(clientId, "wrong"),
       `Basic ${btoa("a:%E0%A4%A")}`,
+      basic(posting.clientId, posting.clientSecret),
     ]) {
-      const response = await post({ Authorization: authorization });
+      const response = await redeem({ Authorization: authorization }, {});
       expect(response.status).toBe(401);
       expect(response.headers.get("www-authenticate")).toBe('Basic realm="token"');
       expect((await response.json()).error).toBe("invalid_client");
     }
-    const inBody = await post(
-      {},
-      `${body}&${new URLSearchParams({ client_id: clientId, client_secret: "wrong" })}`,
-    );
+    // The Basic client's credentials in the body are not its method: a 401 without a challenge.
+    const inBody = await redeem({}, { client_id: clientId, client_secret: clientSecret });
     expect(inBody.status).toBe(401);
     expect(inBody.headers.get("www-authenticate")).toBeNull();
+    // None of the refusals consumed the code; the registered method alone redeems it.
+    expect((await redeem({ Authorization: basic(clientId, clientSecret) }, {})).status).toBe(200);
   });
 
   test("claims and the granted scope follow the requested scopes", async () => {

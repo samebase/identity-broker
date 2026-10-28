@@ -1,5 +1,5 @@
 /// <reference types="vite-plus/client" />
-import { convexTest } from "convex-test";
+import { convexTest, type TestConvex } from "convex-test";
 import { describe, expect, test } from "vite-plus/test";
 import { api } from "./_generated/api.js";
 import schema from "./schema.js";
@@ -10,7 +10,39 @@ const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
 const now = 1_700_000_000_000;
 const verifier = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
 
-async function pendingRequest(requestId = "r1", t = convexTest(schema, modules)) {
+/** What the token endpoint passes for client "cl", registered for client_secret_post. */
+const cl = {
+  clientId: "cl",
+  clientSecretHash: "secret-hash",
+  tokenEndpointAuthMethod: "client_secret_post",
+} as const;
+
+/** App "app" with its client "cl", as /register stores them. */
+async function registered() {
+  const t = convexTest(schema, modules);
+  await t.mutation(api.apps.create, {
+    appId: "app",
+    name: "App",
+    firstParty: true,
+    allowedCallbackHosts: ["app.test"],
+    createdAt: now,
+  });
+  await t.mutation(api.clients.create, {
+    clientId: cl.clientId,
+    appId: "app",
+    secretHash: cl.clientSecretHash,
+    tokenEndpointAuthMethod: cl.tokenEndpointAuthMethod,
+    redirectUri: "https://app.test/cb",
+    deploymentType: "preview",
+    clientName: "App preview",
+    softwareVersion: "v1",
+    createdAt: now,
+  });
+  return t;
+}
+
+async function pendingRequest(requestId = "r1", given?: TestConvex<typeof schema>) {
+  const t = given ?? (await registered());
   await t.mutation(api.authRequests.create, {
     requestId,
     appId: "app",
@@ -76,7 +108,7 @@ describe("upstream path", () => {
 
     const wrongVerifier = await t.mutation(api.authRequests.exchangeCode, {
       codeHash: "ch",
-      clientId: "cl",
+      ...cl,
       codeVerifier: "x".repeat(43),
       now,
     });
@@ -86,7 +118,7 @@ describe("upstream path", () => {
     });
     const exchanged = await t.mutation(api.authRequests.exchangeCode, {
       codeHash: "ch",
-      clientId: "cl",
+      ...cl,
       redirectUri: "https://app.test/cb",
       codeVerifier: verifier,
       now,
@@ -100,11 +132,101 @@ describe("upstream path", () => {
     expect(await t.query(api.authRequests.get, { requestId: "r1" })).toBeNull();
     const replay = await t.mutation(api.authRequests.exchangeCode, {
       codeHash: "ch",
-      clientId: "cl",
+      ...cl,
       codeVerifier: verifier,
       now,
     });
     expect(replay).toMatchObject({ ok: false, description: expect.stringMatching(/already used/) });
+  });
+
+  /** A request completed through the upstream path, with code hash "ch" issued to client "cl". */
+  async function completedCode() {
+    const t = await pendingRequest();
+    await t.mutation(api.authRequests.startUpstream, {
+      requestId: "r1",
+      connector: "g",
+      upstreamStateHash: "sh",
+      upstreamCodeVerifier: "v",
+      now,
+    });
+    await t.mutation(api.authRequests.claimUpstream, {
+      upstreamStateHash: "sh",
+      connector: "g",
+      txnCookieHashes: [],
+      now,
+    });
+    await t.mutation(api.authRequests.complete, {
+      requestId: "r1",
+      identity: { connector: "g", upstreamId: "1" },
+      authTime: now,
+      codeHash: "ch",
+      codeExpiresAt: now + 60_000,
+      now,
+    });
+    const redeem = (credentials: {
+      clientId: string;
+      clientSecretHash: string;
+      tokenEndpointAuthMethod: "client_secret_post" | "client_secret_basic";
+    }) =>
+      t.mutation(api.authRequests.exchangeCode, {
+        ...credentials,
+        codeHash: "ch",
+        codeVerifier: verifier,
+        now,
+      });
+    const codes = () => t.run(async (ctx) => await ctx.db.query("authorizationCodes").collect());
+    return { t, redeem, codes };
+  }
+
+  const refused = {
+    ok: false,
+    error: "invalid_client",
+    description: "Client authentication failed.",
+  } as const;
+
+  test("a client that fails authentication in the redemption leaves the code as it was", async () => {
+    const { t, redeem, codes } = await completedCode();
+    const unchanged = async () => {
+      expect((await codes()).map((code) => [code.codeHash, code.usedAt])).toEqual([
+        ["ch", undefined],
+      ]);
+      expect(await t.query(api.authRequests.get, { requestId: "r1" })).toMatchObject({
+        status: "completed",
+      });
+    };
+    for (const credentials of [
+      { ...cl, clientSecretHash: "wrong-hash" },
+      { ...cl, tokenEndpointAuthMethod: "client_secret_basic" as const },
+      { ...cl, clientId: "cl_unknown" },
+    ]) {
+      expect(await redeem(credentials)).toEqual(refused);
+      await unchanged();
+    }
+    // deleteApp deletes the app row first and the app's clients in later batches.
+    await t.run(async (ctx) => {
+      const app = await ctx.db
+        .query("apps")
+        .withIndex("by_app_id", (q) => q.eq("appId", "app"))
+        .unique();
+      if (app !== null) await ctx.db.delete("apps", app._id);
+    });
+    expect(await redeem(cl)).toEqual(refused);
+    await unchanged();
+  });
+
+  test("a code redeems once, and a failed authentication does not revoke a used code", async () => {
+    const { redeem, codes } = await completedCode();
+    expect(await redeem(cl)).toMatchObject({ ok: true, appId: "app" });
+    expect(await codes()).toMatchObject([{ codeHash: "ch", usedAt: now }]);
+    expect(await redeem({ ...cl, clientSecretHash: "wrong-hash" })).toEqual(refused);
+    expect(await codes()).toMatchObject([{ codeHash: "ch", usedAt: now }]);
+    // The client's own replay revokes the code (RFC 9700 section 4.5.3).
+    expect(await redeem(cl)).toMatchObject({
+      ok: false,
+      error: "invalid_grant",
+      description: "The authorization code was already used.",
+    });
+    expect(await codes()).toEqual([]);
   });
 
   test("expiry at every step", async () => {
@@ -208,7 +330,7 @@ describe("upstream path", () => {
     expect(
       await t.mutation(api.authRequests.exchangeCode, {
         codeHash: "ch",
-        clientId: "cl",
+        ...cl,
         codeVerifier: verifier,
         now: late + 59_000,
       }),
@@ -241,7 +363,7 @@ describe("upstream path", () => {
     expect(
       await t.mutation(api.authRequests.exchangeCode, {
         codeHash: "ch",
-        clientId: "cl",
+        ...cl,
         codeVerifier: verifier,
         now: now + 60_001,
       }),
@@ -278,7 +400,7 @@ describe("email path", () => {
     expect(await verify("good")).toMatchObject({ ok: true });
     const exchanged = await t.mutation(api.authRequests.exchangeCode, {
       codeHash: "ch",
-      clientId: "cl",
+      ...cl,
       codeVerifier: verifier,
       now,
     });

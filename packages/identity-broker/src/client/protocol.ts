@@ -290,7 +290,9 @@ export type TokenInput = {
 /**
  * Client credentials from HTTP Basic (RFC 6749 section 2.3.1) or the form body. The first look at a
  * token request, so it also refuses a repeated parameter (RFC 6749 section 3.2) and a request that
- * uses both methods (section 2.3).
+ * uses both methods (section 2.3.1): an Authorization header and a `client_secret` in the body. A
+ * `client_id` in the body names the client and is not a method; an empty `client_secret` counts as
+ * omitted (section 3.2).
  */
 export function readClientAuthentication(
   authorization: string | null,
@@ -300,7 +302,7 @@ export function readClientAuthentication(
     return invalid(400, "invalid_request", "A parameter is repeated.");
   }
   if (authorization !== null) {
-    if (params.has("client_secret")) {
+    if (params.get("client_secret")) {
       return invalid(400, "invalid_request", "Use one client authentication method, not two.");
     }
     const match = authorization.trim().match(/^basic\s+(.+)$/i);

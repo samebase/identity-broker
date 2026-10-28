@@ -2,7 +2,7 @@ import { v, type Infer } from "convex/values";
 import { mutation, query, type MutationCtx } from "./_generated/server";
 import type { Doc } from "./_generated/dataModel";
 import { sha256Base64Url } from "./crypto";
-import { vAuthRequest, vUpstreamIdentity } from "./schema";
+import { vAuthRequest, vTokenEndpointAuthMethod, vUpstreamIdentity } from "./schema";
 
 const { array, boolean, literal, number, object, optional, string, union } = v;
 
@@ -440,30 +440,66 @@ const vExchangeResult = union(
     identity: vUpstreamIdentity,
     authTime: number(),
   }),
-  object({ ok: literal(false), description: string() }),
+  object({
+    ok: literal(false),
+    error: union(literal("invalid_client"), literal("invalid_grant")),
+    description: string(),
+  }),
 );
 type ExchangeResult = Infer<typeof vExchangeResult>;
 
 /**
- * Redeems an authorization code: single use, bound to the client, the redirect URI and the PKCE
- * challenge of its request (OAuth 2.1 section 4.1.3). On success the code and the request are gone.
+ * Authenticates the client and redeems an authorization code: single use, bound to the client, the
+ * redirect URI and the PKCE challenge of its request (OAuth 2.1 section 4.1.3). The client and its
+ * app are read in this transaction, so a client that fails authentication leaves the code as it
+ * was, and deleting the client or its app commits wholly before the redemption or after it. On
+ * success the code is marked used and the request is gone.
  */
 export const exchangeCode = mutation({
   args: {
-    codeHash: string(),
     clientId: string(),
+    /** SHA-256 hex of the client secret the token request carried. */
+    clientSecretHash: string(),
+    /** How the token request carried the credentials; it must be the method the client registered. */
+    tokenEndpointAuthMethod: vTokenEndpointAuthMethod,
+    codeHash: string(),
     redirectUri: optional(string()),
     codeVerifier: string(),
     now: number(),
   },
   returns: vExchangeResult,
   handler: async (ctx, args): Promise<ExchangeResult> => {
+    const client = await ctx.db
+      .query("clients")
+      .withIndex("by_client_id", (q) => q.eq("clientId", args.clientId))
+      .unique();
+    const app =
+      client === null
+        ? null
+        : await ctx.db
+            .query("apps")
+            .withIndex("by_app_id", (q) => q.eq("appId", client.appId))
+            .unique();
+    // A client whose app is deleted is refused at once: deleteApp deletes the app row first and
+    // the app's clients in later batches.
+    if (
+      client === null ||
+      app === null ||
+      client.tokenEndpointAuthMethod !== args.tokenEndpointAuthMethod ||
+      client.secretHash !== args.clientSecretHash
+    ) {
+      return { ok: false, error: "invalid_client", description: "Client authentication failed." };
+    }
     const code = await ctx.db
       .query("authorizationCodes")
       .withIndex("by_code_hash", (q) => q.eq("codeHash", args.codeHash))
       .unique();
     if (code === null) {
-      return { ok: false, description: "The authorization code is unknown." };
+      return {
+        ok: false,
+        error: "invalid_grant",
+        description: "The authorization code is unknown.",
+      };
     }
     if (code.usedAt !== undefined) {
       // Replay: the code and its request are revoked (RFC 9700 section 4.5.3).
@@ -472,23 +508,43 @@ export const exchangeCode = mutation({
       if (request !== null) {
         await ctx.db.delete("authRequests", request._id);
       }
-      return { ok: false, description: "The authorization code was already used." };
+      return {
+        ok: false,
+        error: "invalid_grant",
+        description: "The authorization code was already used.",
+      };
     }
     if (code.expiresAt <= args.now) {
-      return { ok: false, description: "The authorization code expired." };
+      return { ok: false, error: "invalid_grant", description: "The authorization code expired." };
     }
     if (code.clientId !== args.clientId) {
-      return { ok: false, description: "The authorization code belongs to another client." };
+      return {
+        ok: false,
+        error: "invalid_grant",
+        description: "The authorization code belongs to another client.",
+      };
     }
     const request = await ctx.db.get("authRequests", code.authRequestId);
     if (request === null || request.status !== "completed") {
-      return { ok: false, description: "The authorization request is gone." };
+      return {
+        ok: false,
+        error: "invalid_grant",
+        description: "The authorization request is gone.",
+      };
     }
     if (args.redirectUri !== undefined && args.redirectUri !== request.redirectUri) {
-      return { ok: false, description: "redirect_uri does not match the authorization request." };
+      return {
+        ok: false,
+        error: "invalid_grant",
+        description: "redirect_uri does not match the authorization request.",
+      };
     }
     if ((await sha256Base64Url(args.codeVerifier)) !== request.codeChallenge) {
-      return { ok: false, description: "code_verifier does not match code_challenge." };
+      return {
+        ok: false,
+        error: "invalid_grant",
+        description: "code_verifier does not match code_challenge.",
+      };
     }
     await ctx.db.patch("authorizationCodes", code._id, { usedAt: args.now });
     await ctx.db.delete("authRequests", request._id);
