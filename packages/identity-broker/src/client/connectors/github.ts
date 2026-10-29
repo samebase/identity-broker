@@ -60,11 +60,9 @@ export function github(credentials: {
     kind: "oauth",
     name: credentials.name ?? "github",
     label: "GitHub",
-    // GitHub sends iss=https://github.com/login/oauth on its authorization response (RFC 9207),
-    // the issuer of its RFC 8414 metadata at /.well-known/oauth-authorization-server/login/oauth.
+    // GitHub publishes RFC 8414 metadata for this issuer and sends it as `iss` on its
+    // authorization response (RFC 9207).
     issuer: "https://github.com/login/oauth",
-    authorizationEndpoint: "https://github.com/login/oauth/authorize",
-    tokenEndpoint: "https://github.com/login/oauth/access_token",
     scopes: ["read:user", "user:email"],
     clientId: credentials.clientId,
     clientSecret: credentials.clientSecret,

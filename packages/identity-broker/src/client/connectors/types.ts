@@ -15,19 +15,16 @@ type Credentials = {
   clientSecret: () => string;
 };
 
-/** A plain OAuth 2.0 provider: identity comes from an API call with the access token. */
+/**
+ * A plain OAuth 2.0 provider found through its RFC 8414 metadata: identity comes from an API call
+ * with the access token.
+ */
 export type OauthConnector = Credentials & {
   kind: "oauth";
   name: string;
   /** Shown on the chooser button, e.g. "GitHub". */
   label: string;
-  /**
-   * The provider's issuer identifier: the `iss` it sends on its authorization response (RFC 9207).
-   * A response whose `iss` differs is refused.
-   */
   issuer: string;
-  authorizationEndpoint: string;
-  tokenEndpoint: string;
   scopes: string[];
   identity: (accessToken: string) => Promise<UpstreamIdentity>;
 };
