@@ -9,7 +9,7 @@ function authorizationServer(
 ): Promise<oauth.AuthorizationServer> {
   if (connector.kind === "oauth") {
     return Promise.resolve({
-      issuer: connector.authorizationEndpoint,
+      issuer: connector.issuer,
       authorization_endpoint: connector.authorizationEndpoint,
       token_endpoint: connector.tokenEndpoint,
     });

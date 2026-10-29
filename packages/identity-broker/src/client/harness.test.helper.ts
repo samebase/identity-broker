@@ -195,6 +195,7 @@ export function fakeUpstream(options: { userId?: string } = {}) {
     kind: "oauth",
     name: "fake",
     label: "Fake",
+    issuer: "https://upstream.test",
     authorizationEndpoint: "https://upstream.test/authorize",
     tokenEndpoint: "https://upstream.test/token",
     scopes: ["read:user"],

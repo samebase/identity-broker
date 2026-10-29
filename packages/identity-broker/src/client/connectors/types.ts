@@ -21,6 +21,11 @@ export type OauthConnector = Credentials & {
   name: string;
   /** Shown on the chooser button, e.g. "GitHub". */
   label: string;
+  /**
+   * The provider's issuer identifier: the `iss` it sends on its authorization response (RFC 9207).
+   * A response whose `iss` differs is refused.
+   */
+  issuer: string;
   authorizationEndpoint: string;
   tokenEndpoint: string;
   scopes: string[];
