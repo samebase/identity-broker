@@ -3,24 +3,21 @@ import type { OauthConnector, OidcConnector, UpstreamIdentity } from "./types.js
 
 const discovered = new Map<string, Promise<oauth.AuthorizationServer>>();
 
-/** OIDC discovery, once per issuer per isolate. */
+/**
+ * Discovery, once per issuer per isolate: RFC 8414 metadata for a plain OAuth connector, OIDC
+ * Discovery for an OIDC one. oauth4webapi then holds each callback to that metadata, so a provider
+ * that advertises `authorization_response_iss_parameter_supported` must send `iss` (RFC 9207).
+ */
 function authorizationServer(
   connector: OauthConnector | OidcConnector,
 ): Promise<oauth.AuthorizationServer> {
-  if (connector.kind === "oauth") {
-    return Promise.resolve({
-      issuer: connector.authorizationEndpoint,
-      authorization_endpoint: connector.authorizationEndpoint,
-      token_endpoint: connector.tokenEndpoint,
-    });
-  }
   const cached = discovered.get(connector.issuer);
   if (cached !== undefined) {
     return cached;
   }
   const issuer = new URL(connector.issuer);
   const pending = oauth
-    .discoveryRequest(issuer, { algorithm: "oidc" })
+    .discoveryRequest(issuer, { algorithm: connector.kind === "oauth" ? "oauth2" : "oidc" })
     .then((response) => oauth.processDiscoveryResponse(issuer, response));
   discovered.set(connector.issuer, pending);
   pending.catch(() => discovered.delete(connector.issuer));

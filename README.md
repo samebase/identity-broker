@@ -15,8 +15,9 @@ registers each deployment as a client at deploy time and never touches GitHub or
   flow with PKCE, discovery, JWKS, dynamic client registration (RFC 7591) gated by per-app tokens,
   userinfo. RS256 `id_token`s with pairwise subjects per app; a first-party app also gets the
   connector's own id for the account in `connector_account_id`.
-- Connectors are configuration: any OAuth 2.0 or OpenID Connect provider, and an email code sent by
-  your own action. `github()`, `google()` and `email()` are included.
+- Connectors are configuration: any OAuth 2.0 provider that publishes RFC 8414 metadata, any OpenID
+  Connect provider, and an email code sent by your own action. `github()`, `google()` and `email()`
+  are included.
 - A hub is a small Convex app that mounts the component. Fork
   [samebase/identity-hub](https://github.com/samebase/identity-hub) for one.
 - `@samebase/alchemy-identity-hub`: an Alchemy v2 resource, `IdentityHub.Client`, that registers a

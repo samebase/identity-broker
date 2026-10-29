@@ -156,8 +156,9 @@ export async function pkce() {
 }
 
 /**
- * A fake plain-OAuth provider behind the global fetch: a token endpoint and a user endpoint.
- * Returns the connector pointing at it and the stub, so a test can inspect the calls.
+ * A fake plain-OAuth provider behind the global fetch: RFC 8414 metadata without `iss` support, a
+ * token endpoint and a user endpoint. Returns the connector pointing at it and the stub, so a test
+ * can inspect the calls.
  */
 export function fakeUpstream(options: { userId?: string } = {}) {
   const calls: Request[] = [];
@@ -166,6 +167,14 @@ export function fakeUpstream(options: { userId?: string } = {}) {
       const request = new Request(input, init);
       calls.push(request);
       const url = new URL(request.url);
+      if (url.href === "https://upstream.test/.well-known/oauth-authorization-server") {
+        return Response.json({
+          issuer: "https://upstream.test",
+          authorization_endpoint: "https://upstream.test/authorize",
+          token_endpoint: "https://upstream.test/token",
+          response_types_supported: ["code"],
+        });
+      }
       if (
         url.origin === "https://upstream.test" &&
         url.pathname === "/token" &&
@@ -195,8 +204,7 @@ export function fakeUpstream(options: { userId?: string } = {}) {
     kind: "oauth",
     name: "fake",
     label: "Fake",
-    authorizationEndpoint: "https://upstream.test/authorize",
-    tokenEndpoint: "https://upstream.test/token",
+    issuer: "https://upstream.test",
     scopes: ["read:user"],
     clientId: () => "up-client",
     clientSecret: () => "up-secret",
