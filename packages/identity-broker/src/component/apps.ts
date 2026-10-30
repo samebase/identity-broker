@@ -3,13 +3,13 @@ import { internal } from "./_generated/api";
 import { internalMutation, mutation, query, type MutationCtx } from "./_generated/server";
 import { BATCH } from "./lifecycle";
 
-const { array, boolean, number, object, string } = v;
+const { array, boolean, number, object, optional, string } = v;
 
 const vApp = object({
   appId: string(),
   name: string(),
   firstParty: boolean(),
-  allowedCallbackHosts: array(string()),
+  allowedCallbackHosts: optional(array(string())),
   createdAt: number(),
 });
 
@@ -19,7 +19,7 @@ export const create = mutation({
     appId: string(),
     name: string(),
     firstParty: boolean(),
-    allowedCallbackHosts: array(string()),
+    allowedCallbackHosts: optional(array(string())),
     createdAt: number(),
   },
   returns: v.null(),
@@ -31,13 +31,7 @@ export const create = mutation({
     if (existing !== null) {
       throw new Error(`An app with id "${args.appId}" already exists`);
     }
-    await ctx.db.insert("apps", {
-      appId: args.appId,
-      name: args.name,
-      firstParty: args.firstParty,
-      allowedCallbackHosts: args.allowedCallbackHosts,
-      createdAt: args.createdAt,
-    });
+    await ctx.db.insert("apps", args);
     return null;
   },
 });
@@ -53,13 +47,8 @@ export const get = query({
     if (app === null) {
       return null;
     }
-    return {
-      appId: app.appId,
-      name: app.name,
-      firstParty: app.firstParty,
-      allowedCallbackHosts: app.allowedCallbackHosts,
-      createdAt: app.createdAt,
-    };
+    const { _id, _creationTime, ...fields } = app;
+    return fields;
   },
 });
 
@@ -69,13 +58,7 @@ export const list = query({
   handler: async (ctx) => {
     const apps = await ctx.db.query("apps").collect();
     return apps
-      .map((app) => ({
-        appId: app.appId,
-        name: app.name,
-        firstParty: app.firstParty,
-        allowedCallbackHosts: app.allowedCallbackHosts,
-        createdAt: app.createdAt,
-      }))
+      .map(({ _id, _creationTime, ...fields }) => fields)
       .sort((a, b) => a.createdAt - b.createdAt || a.appId.localeCompare(b.appId));
   },
 });

@@ -4,38 +4,34 @@ The broker is a federated OpenID Provider in the shape of Dex: upstream connecto
 
 ## What is stored
 
-Apps, their registration tokens (hashed), clients (one per deployment: exact redirect URI, hashed
-secret), authorization requests for ten minutes, authorization codes for sixty seconds and one use,
-an audit row per issued `id_token` (app, client, connector, pairwise subject, time), and a row per
-email code sent (SHA-256 of the canonical address, time) for one hour. Apart from those send rows,
-nothing about a user outlives the request that carried it.
+Apps, clients (one per deployment: exact redirect URI, hashed secret), authorization requests for
+ten minutes, authorization codes for sixty seconds and one use, an audit row per issued `id_token`
+(app, client, connector, pairwise subject, time), and a row per email code sent (SHA-256 of the
+canonical address, time) for one hour. Apart from those send rows, nothing about a user outlives the
+request that carried it.
 
 The host schedules the component's `cleanup` daily from a cron, as the
-[identity-hub](https://github.com/samebase/identity-hub) template does; nothing else deletes these
-rows. One run drains: a batch deletes at most 200 rows per table, and a full batch schedules the
-next one at once with the same cutoff, until no table fills a batch. The cutoff is the time the run
-began, so the run ends: rows written during it run out after the cutoff. A completed request lives
-until one minute after its authorization code expires, so cleanup never removes a request whose code
-can still be redeemed.
+[team-base](https://github.com/samebase/team-base) template does; nothing else deletes these rows.
+One run drains: a batch deletes at most 200 rows per table, and a full batch schedules the next one
+at once with the same cutoff, until no table fills a batch. The cutoff is the time the run began, so
+the run ends: rows written during it run out after the cutoff. A completed request lives until one
+minute after its authorization code expires, so cleanup never removes a request whose code can still
+be redeemed.
 
-Clients stay until `DELETE /register/<client_id>` or `deleteClient` removes them, or their app is
-deleted. A host that sets `previewClientIdleDays` also has cleanup delete a preview client with no
-sign-in for that many days. It is off by default, because a deployment whose client was deleted does
-not register again by itself.
+Clients stay until `deleteClient` removes them, or their app is deleted. A host that sets
+`previewClientIdleDays` also has cleanup delete a preview client with no sign-in for that many days.
+It is off by default, because a deployment whose client was deleted does not register again by
+itself.
 
 ## Registration
 
-`POST /register` (RFC 7591) registers one deployment of an app as a client, with the app's
-registration token as a Bearer token. `DELETE /register/<client_id>` with a token of the same app
-deletes that client, of any deployment type, and answers 204. A missing, unknown or expired token
-answers 401. A client that is gone and a client of another app both answer 404, not 403, so a token
-learns nothing about another app's clients. The delete has the shape of RFC 7592's, which the broker
-does not implement: no registration access token per client, and a missing client answers 404 rather
-than 401.
-
-`deleteApp` deletes the app row first, then its registration tokens and clients in batches of 200
-per table, each scheduling the next at once. Registration, `/authorize` and `/token` refuse a token
-or client whose app is gone, so the first transaction revokes them all.
+`registerClient` is an internal function: it needs the hub's deploy key, and it registers one
+deployment of an app as a client. There is no public registration endpoint, and no token of its own:
+in a team base, everyone who may register a client already holds the Convex credential of the team,
+so a second credential would guard nothing. For the same reason an app has no list of allowed
+callback hosts. The first client of an app id creates the app as a first-party app. The routes
+`/register` and `/register/<client_id>`, their tokens, and the host list are deprecated: they stay
+until the deployed apps have moved, and a later release removes them.
 
 ## Token endpoint
 
@@ -100,8 +96,8 @@ subjects gives the hub other ids than it gave an app's own client.
   apps can correlate a user with each other and with the provider account, which pairwise subjects
   (OIDC Core 8.1) exist to prevent, and for the email connector it is the address, even without the
   `email` scope. A third-party app gets only the pairwise `sub`, the stable id its consent names.
-- Dynamically registered clients inherit the trust of their app: a first-party app's deployments
-  skip the chooser and consent, because every deployment of a first-party app registers dynamically.
+- Clients inherit the trust of their app: a first-party app's deployments skip the chooser and
+  consent, because every deployment of a first-party app registers at deploy time.
 - No loopback exception on redirect URIs: a local deployment registers its exact
   `http://127.0.0.1:<port>/...` URI.
 - Email codes have no standard; the result is `email_verified: true`, no `amr`.

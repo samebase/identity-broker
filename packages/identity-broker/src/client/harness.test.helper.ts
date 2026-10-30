@@ -85,6 +85,25 @@ export async function createHarness(options: {
     });
   }
 
+  /** The admin function `registerClient`, as `npx convex run` or a stack runs it. */
+  async function runRegisterClient(args: {
+    appId: string;
+    redirectUri: string;
+  }): Promise<{ issuer: string; clientId: string; clientSecret: string }> {
+    const { registerClient: admin } = broker.admin();
+    return await t.action(
+      async (ctx) =>
+        // @ts-expect-error internalMutationGeneric keeps the function as _handler; RegisteredMutation does not declare it.
+        await admin._handler(ctx, {
+          ...args,
+          deploymentType: "preview",
+          clientName: "pr-1",
+          softwareVersion: "abc",
+          tokenEndpointAuthMethod: "client_secret_post",
+        }),
+    );
+  }
+
   /** An app, a registration token for it, and one registered client with `redirectUri`. */
   async function registerClient(args: {
     appName: string;
@@ -131,7 +150,7 @@ export async function createHarness(options: {
     };
   }
 
-  return { t, broker, http, fetchBroker, registerClient, keySet, issuer };
+  return { t, broker, http, fetchBroker, registerClient, runRegisterClient, keySet, issuer };
 }
 
 export async function sha256Hex(input: string): Promise<string> {

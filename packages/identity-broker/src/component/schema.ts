@@ -94,8 +94,11 @@ export default defineSchema({
     appId: string(),
     name: string(),
     firstParty: boolean(),
-    /** Exact hosts or `*.suffix` patterns a client callback may use, e.g. `*.convex.site`. */
-    allowedCallbackHosts: array(string()),
+    /**
+     * Exact hosts or `*.suffix` patterns a client callback may use through `/register`, e.g.
+     * `*.convex.site`. `registerClient` does not read it.
+     */
+    allowedCallbackHosts: optional(array(string())),
     createdAt: number(),
   }).index("by_app_id", ["appId"]),
 

@@ -56,7 +56,7 @@ export const readToken = query({
       appId: app.appId,
       name: app.name,
       firstParty: app.firstParty,
-      allowedCallbackHosts: app.allowedCallbackHosts,
+      allowedCallbackHosts: app.allowedCallbackHosts ?? [],
     };
   },
 });

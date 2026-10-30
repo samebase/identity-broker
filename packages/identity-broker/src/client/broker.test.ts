@@ -289,6 +289,63 @@ describe("registration", () => {
   });
 });
 
+describe("registerClient", () => {
+  test("the first client creates a first-party app; the next one joins it", async () => {
+    const h = await createHarness({ connectors: [fakeUpstream().connector] });
+    const first = await h.runRegisterClient({ appId: "scout", redirectUri: REDIRECT_URI });
+    expect(first.issuer).toBe(ISSUER);
+    const second = await h.runRegisterClient({ appId: "scout", redirectUri: REDIRECT_URI });
+    expect(second.clientId).not.toBe(first.clientId);
+    expect(await h.t.query(api.apps.list, {})).toEqual([
+      { appId: "scout", name: "scout", firstParty: true, createdAt: expect.any(Number) },
+    ]);
+    const stored = await h.t.query(api.clients.get, { clientId: first.clientId });
+    expect(stored?.secretHash).toBe(await sha256Hex(first.clientSecret));
+    expect(JSON.stringify(stored)).not.toContain(first.clientSecret);
+  });
+
+  test("an app that exists keeps its row and needs no allowed host", async () => {
+    const h = await createHarness({ connectors: [fakeUpstream().connector] });
+    const { appId } = await h.registerClient({
+      appName: "Third",
+      firstParty: false,
+      redirectUri: REDIRECT_URI,
+    });
+    await h.runRegisterClient({ appId, redirectUri: "https://elsewhere.example/cb" });
+    expect((await h.t.query(api.apps.get, { appId }))?.firstParty).toBe(false);
+  });
+
+  test("a redirect URI that is not https, or http on a loopback host, is refused", async () => {
+    const h = await createHarness({ connectors: [fakeUpstream().connector] });
+    await expect(
+      h.runRegisterClient({ appId: "scout", redirectUri: "http://app.test/cb" }),
+    ).rejects.toThrow("redirect URI");
+    expect(await h.t.query(api.apps.list, {})).toEqual([]);
+  });
+
+  test("an app without a host list refuses /register", async () => {
+    const h = await createHarness({ connectors: [fakeUpstream().connector] });
+    await h.runRegisterClient({ appId: "scout", redirectUri: REDIRECT_URI });
+    const token = "rt_test-scout";
+    await h.t.mutation(api.registration.mintToken, {
+      tokenHash: await sha256Hex(token),
+      appId: "scout",
+      expiresAt: Date.now() + 60_000,
+      createdAt: Date.now(),
+    });
+    const refused = await h.fetchBroker(`${ISSUER}/register`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        redirect_uris: [REDIRECT_URI],
+        client_name: "x",
+        deployment_type: "preview",
+      }),
+    });
+    expect(refused.status).toBe(400);
+  });
+});
+
 describe("app deletion", () => {
   test("with the app row gone, its tokens and clients are refused before their rows are", async () => {
     const h = await createHarness({ connectors: [fakeUpstream().connector] });

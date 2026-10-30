@@ -10,6 +10,7 @@ import {
 import { v } from "convex/values";
 import * as oauth from "oauth4webapi";
 import type { ComponentApi } from "../component/_generated/component.js";
+import { vDeploymentType, vTokenEndpointAuthMethod } from "../component/schema.js";
 import type {
   Connector,
   EmailConnector,
@@ -28,6 +29,7 @@ import {
 import { parseKeySet, publicJwks, SIGNING_ALGORITHM, type KeySet } from "./keys.js";
 import {
   canonicalEmail,
+  parseRedirectUri,
   hostAllowed,
   readBearerToken,
   readClientAuthentication,
@@ -1068,6 +1070,53 @@ export function defineIdentityBroker(config: IdentityBrokerConfig) {
               createdAt: Date.now(),
             });
             return { appId };
+          },
+        }),
+        /**
+         * Registers one deployment of `appId` as a client, and answers with the issuer and the
+         * client. The secret is in this reply only. The first client creates the app, as a first-party
+         * app: whoever runs this function administers this hub, so the app is the team's own.
+         */
+        registerClient: internalMutationGeneric({
+          args: {
+            appId: string(),
+            redirectUri: string(),
+            deploymentType: vDeploymentType,
+            clientName: string(),
+            softwareVersion: string(),
+            tokenEndpointAuthMethod: vTokenEndpointAuthMethod,
+          },
+          returns: v.object({ issuer: string(), clientId: string(), clientSecret: string() }),
+          handler: async (ctx, args) => {
+            if (parseRedirectUri(args.redirectUri) === null) {
+              throw new Error(
+                "The redirect URI must be an absolute https URL without a fragment, or http on a loopback host.",
+              );
+            }
+            const now = Date.now();
+            const { appId } = args;
+            if ((await ctx.runQuery(component.apps.get, { appId })) === null) {
+              await ctx.runMutation(component.apps.create, {
+                appId,
+                name: appId,
+                firstParty: true,
+                createdAt: now,
+              });
+            }
+            const clientId = `cl_${randomToken(16)}`;
+            const clientSecret = randomToken(32);
+            await ctx.runMutation(component.clients.create, {
+              clientId,
+              appId,
+              secretHash: await sha256Hex(clientSecret),
+              tokenEndpointAuthMethod: args.tokenEndpointAuthMethod,
+              redirectUri: args.redirectUri,
+              deploymentType: args.deploymentType,
+              clientName: args.clientName,
+              softwareVersion: args.softwareVersion,
+              createdAt: now,
+            });
+            return { issuer, clientId, clientSecret };
           },
         }),
         mintRegistrationToken: internalMutationGeneric({

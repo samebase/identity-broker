@@ -28,7 +28,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         "mutation",
         "internal",
         {
-          allowedCallbackHosts: Array<string>;
+          allowedCallbackHosts?: Array<string>;
           appId: string;
           createdAt: number;
           firstParty: boolean;
@@ -42,7 +42,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         "internal",
         { appId: string },
         {
-          allowedCallbackHosts: Array<string>;
+          allowedCallbackHosts?: Array<string>;
           appId: string;
           createdAt: number;
           firstParty: boolean;
@@ -55,7 +55,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         "internal",
         {},
         Array<{
-          allowedCallbackHosts: Array<string>;
+          allowedCallbackHosts?: Array<string>;
           appId: string;
           createdAt: number;
           firstParty: boolean;

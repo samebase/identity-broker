@@ -32,7 +32,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        package: [packages/identity-broker, packages/alchemy-identity-hub]
+        package: [packages/identity-broker]
     env:
       PACKAGE_DIR: ${{ matrix.package }}
     steps:
