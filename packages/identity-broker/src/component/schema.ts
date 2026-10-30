@@ -94,6 +94,8 @@ export default defineSchema({
     appId: string(),
     name: string(),
     firstParty: boolean(),
+    /** No longer read. The rows of a hub from before 0.8.0 still hold it. */
+    allowedCallbackHosts: optional(array(string())),
     createdAt: number(),
   }).index("by_app_id", ["appId"]),
 
