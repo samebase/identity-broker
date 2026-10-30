@@ -4,7 +4,13 @@
 import { createLocalJWKSet, jwtVerify } from "jose";
 import * as client from "openid-client";
 import { afterEach, expect, test, vi } from "vite-plus/test";
-import { createHarness, fakeUpstream, ISSUER, type Harness } from "./harness.test.helper.js";
+import {
+  createHarness,
+  fakeUpstream,
+  ISSUER,
+  txnCookie,
+  type Harness,
+} from "./harness.test.helper.js";
 import { createKeySet, rotateKeySet, rotateKeySetWithoutOverlap, type KeySet } from "./keys.js";
 
 const REDIRECT_URI = "https://app.test/oauth/hub/callback";
@@ -68,7 +74,7 @@ async function signIn(options: { keySet?: KeySet } = {}) {
   const callback = new URL(upstreamUrl.searchParams.get("redirect_uri") ?? "");
   callback.searchParams.set("code", "upstream-code");
   callback.searchParams.set("state", upstreamUrl.searchParams.get("state") ?? "");
-  const back = await h.fetchBroker(callback);
+  const back = await h.fetchBroker(callback, { headers: txnCookie(started) });
   expect(back.status).toBe(302);
   const currentUrl = new URL(back.headers.get("location") ?? "");
   expect(currentUrl.origin + currentUrl.pathname).toBe(REDIRECT_URI);

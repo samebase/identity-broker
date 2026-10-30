@@ -7,8 +7,8 @@ The broker is a federated OpenID Provider in the shape of Dex: upstream connecto
 Apps, clients (one per deployment: exact redirect URI, hashed secret), authorization requests for
 ten minutes, authorization codes for sixty seconds and one use, an audit row per issued `id_token`
 (app, client, connector, pairwise subject, time), and a row per email code sent (SHA-256 of the
-canonical address, time) for one hour. Apart from those send rows, nothing about a user outlives the
-request that carried it.
+canonical address, time) for one hour. Apart from those audit and send rows, nothing about a user
+outlives the request that carried it. The audit rows keep the pairwise subject for 90 days.
 
 The host schedules the component's `cleanup` daily from a cron, as the
 [team-base](https://github.com/samebase/team-base) template does; nothing else deletes these rows.
@@ -36,18 +36,26 @@ callback hosts. The first client of an app id creates the app as a first-party a
 A client authenticates with the one method it registered, `client_secret_basic` or
 `client_secret_post`. A request that carries an `Authorization` header and a non-empty
 `client_secret` in the body answers `invalid_request`, even when both are right (RFC 6749 section
-2.3.1); an empty parameter counts as omitted (section 3.2). The mutation that redeems the
+2.3); an empty parameter counts as omitted (section 3.2). The mutation that redeems the
 authorization code also reads the client and its app and checks the secret and the method, so a
 deletion of either commits wholly before a redemption or after it, a failed authentication leaves
 the code redeemable, and a code redeems once.
 
 ## Issuer
 
-The supported configuration is a dedicated hostname with the issuer at `/`, such as
-`https://auth.example.com`. There the transaction cookies carry the `__Host-` prefix, so no other
-path or subdomain can set or shadow them. An issuer under a path, such as
-`https://example.com/identity`, uses plain cookies scoped to that path, and is not verified in
-browsers.
+The issuer is https, or http on a loopback host for local development. The supported configuration
+is a dedicated hostname with the issuer at `/`, such as `https://auth.example.com`. There the
+transaction cookies carry the `__Host-` prefix, so a subdomain or a narrower path cannot set them.
+Another handler on the same hostname can, so the hostname serves the broker alone. An issuer under a
+path, such as `https://example.com/identity`, uses plain cookies scoped to that path, and is not
+verified in browsers.
+
+## Browser binding
+
+`/authorize` sets one transaction cookie per request, and every later step needs it: `/continue`,
+the connector callback, and the email steps (RFC 9700 section 2.1.1). A first-party request skips
+the chooser, not this binding. A link or a callback that reaches another browser gets an error page,
+and the request keeps waiting for the browser that started it.
 
 ## Email send limits
 

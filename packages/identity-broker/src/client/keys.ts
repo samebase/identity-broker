@@ -1,5 +1,6 @@
 import { exportJWK, generateKeyPair, importJWK, type CryptoKey, type JWK } from "jose";
 import { asRecord } from "./protocol.js";
+import { randomToken } from "./subject.js";
 
 export const SIGNING_ALGORITHM = "RS256";
 
@@ -36,15 +37,6 @@ function randomKid(): string {
   return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
-function randomSalt(): string {
-  const bytes = new Uint8Array(32);
-  crypto.getRandomValues(bytes);
-  return btoa(String.fromCharCode(...bytes))
-    .replace(/\+/g, "-")
-    .replace(/\//g, "_")
-    .replace(/=+$/, "");
-}
-
 async function freshKey(): Promise<{ kid: string; privateJwk: JWK }> {
   const kid = randomKid();
   const { privateKey } = await generateKeyPair(SIGNING_ALGORITHM, { extractable: true });
@@ -55,7 +47,7 @@ async function freshKey(): Promise<{ kid: string; privateJwk: JWK }> {
 /** A new key set: one current key and a salt. */
 export async function createKeySet(): Promise<KeySet> {
   const key = await freshKey();
-  return { version: 1, pairwiseSalt: randomSalt(), keys: [{ status: "current", ...key }] };
+  return { version: 1, pairwiseSalt: randomToken(32), keys: [{ status: "current", ...key }] };
 }
 
 /**

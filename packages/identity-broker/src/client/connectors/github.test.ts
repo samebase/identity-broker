@@ -1,5 +1,5 @@
 import { afterEach, expect, test, vi } from "vite-plus/test";
-import { createHarness, pkce } from "../harness.test.helper.js";
+import { createHarness, pkce, txnCookie } from "../harness.test.helper.js";
 import { github } from "./github.js";
 
 // GitHub's documented example responses for GET /user and GET /user/emails
@@ -136,14 +136,16 @@ async function signInWithIss(iss: string | undefined) {
     code_challenge: challenge,
     code_challenge_method: "S256",
   }).toString();
-  const upstream = new URL((await h.fetchBroker(authorize)).headers.get("location") ?? "");
+  const started = await h.fetchBroker(authorize);
+  const upstream = new URL(started.headers.get("location") ?? "");
   const callback = new URL(upstream.searchParams.get("redirect_uri") ?? "");
   callback.searchParams.set("code", "github-code");
   if (iss !== undefined) {
     callback.searchParams.set("iss", iss);
   }
   callback.searchParams.set("state", upstream.searchParams.get("state") ?? "");
-  return new URL((await h.fetchBroker(callback)).headers.get("location") ?? "");
+  const back = await h.fetchBroker(callback, { headers: txnCookie(started) });
+  return new URL(back.headers.get("location") ?? "");
 }
 
 test("a callback with GitHub's iss completes the sign-in", async () => {

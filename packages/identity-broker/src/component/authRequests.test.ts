@@ -1,9 +1,9 @@
 /// <reference types="vite-plus/client" />
 import { convexTest, type TestConvex } from "convex-test";
+import { calculatePKCECodeChallenge } from "oauth4webapi";
 import { describe, expect, test } from "vite-plus/test";
 import { api } from "./_generated/api.js";
 import schema from "./schema.js";
-import { sha256Base64Url } from "./crypto.js";
 
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
 
@@ -49,8 +49,9 @@ async function pendingRequest(requestId = "r1", given?: TestConvex<typeof schema
     redirectUri: "https://app.test/cb",
     scope: "openid",
     state: "s",
-    codeChallenge: await sha256Base64Url(verifier),
+    codeChallenge: await calculatePKCECodeChallenge(verifier),
     freshLogin: false,
+    txnCookieHash: "cookie-hash",
     createdAt: now,
     expiresAt: now + 600_000,
   });
@@ -72,7 +73,7 @@ describe("upstream path", () => {
     const claim = await t.mutation(api.authRequests.claimUpstream, {
       upstreamStateHash: "sh",
       connector: "github",
-      txnCookieHashes: [],
+      txnCookieHashes: ["cookie-hash"],
       now,
     });
     expect(claim.status).toBe("claimed");
@@ -81,7 +82,7 @@ describe("upstream path", () => {
       await t.mutation(api.authRequests.claimUpstream, {
         upstreamStateHash: "sh",
         connector: "github",
-        txnCookieHashes: [],
+        txnCookieHashes: ["cookie-hash"],
         now,
       }),
     ).toEqual({ status: "missing" });
@@ -151,7 +152,7 @@ describe("upstream path", () => {
     await t.mutation(api.authRequests.claimUpstream, {
       upstreamStateHash: "sh",
       connector: "g",
-      txnCookieHashes: [],
+      txnCookieHashes: ["cookie-hash"],
       now,
     });
     await t.mutation(api.authRequests.complete, {
@@ -251,7 +252,7 @@ describe("upstream path", () => {
       await t.mutation(api.authRequests.claimUpstream, {
         upstreamStateHash: "sh",
         connector: "g",
-        txnCookieHashes: [],
+        txnCookieHashes: ["cookie-hash"],
         now: late,
       }),
     ).toEqual({
@@ -277,7 +278,7 @@ describe("upstream path", () => {
       await t.mutation(api.authRequests.claimUpstream, {
         upstreamStateHash: "sh",
         connector: "github",
-        txnCookieHashes: [],
+        txnCookieHashes: ["cookie-hash"],
         now,
       }),
     ).toEqual({ status: "missing" });
@@ -288,7 +289,7 @@ describe("upstream path", () => {
       await t.mutation(api.authRequests.claimUpstream, {
         upstreamStateHash: "sh",
         connector: "google",
-        txnCookieHashes: [],
+        txnCookieHashes: ["cookie-hash"],
         now,
       }),
     ).toMatchObject({ status: "claimed", connector: "google", upstreamNonce: "n" });
@@ -308,7 +309,7 @@ describe("upstream path", () => {
     await t.mutation(api.authRequests.claimUpstream, {
       upstreamStateHash: "sh",
       connector: "g",
-      txnCookieHashes: [],
+      txnCookieHashes: ["cookie-hash"],
       now: late,
     });
     await t.mutation(api.authRequests.complete, {
@@ -348,7 +349,7 @@ describe("upstream path", () => {
     await t.mutation(api.authRequests.claimUpstream, {
       upstreamStateHash: "sh",
       connector: "g",
-      txnCookieHashes: [],
+      txnCookieHashes: ["cookie-hash"],
       now,
     });
     await t.mutation(api.authRequests.complete, {

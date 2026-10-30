@@ -144,7 +144,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
           requestId: string;
           scope: string;
           state?: string;
-          txnCookieHash?: string;
+          txnCookieHash: string;
         },
         null,
         Name
@@ -202,7 +202,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
             scope: string;
             state?: string;
             status: "pending";
-            txnCookieHash?: string;
+            txnCookieHash: string;
           }
         | {
             appId: string;
@@ -218,7 +218,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
             scope: string;
             state?: string;
             status: "upstream";
-            txnCookieHash?: string;
+            txnCookieHash: string;
             upstreamCodeVerifier: string;
             upstreamNonce?: string;
             upstreamStateHash: string;
@@ -237,7 +237,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
             scope: string;
             state?: string;
             status: "claimed";
-            txnCookieHash?: string;
+            txnCookieHash: string;
           }
         | {
             appId: string;
@@ -259,7 +259,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
             scope: string;
             state?: string;
             status: "emailSent";
-            txnCookieHash?: string;
+            txnCookieHash: string;
           }
         | {
             appId: string;
@@ -283,7 +283,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
             scope: string;
             state?: string;
             status: "completed";
-            txnCookieHash?: string;
+            txnCookieHash: string;
           }
         | null,
         Name

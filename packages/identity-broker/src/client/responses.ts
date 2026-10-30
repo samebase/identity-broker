@@ -76,14 +76,18 @@ export function authorizationError(args: {
   });
 }
 
-/** The parameters of a GET query or a form POST, which the authorization endpoint accepts alike. */
+/**
+ * The parameters of a GET query or a form POST, which the authorization endpoint accepts alike. A
+ * parameter sent without a value counts as omitted (RFC 6749 section 3.1).
+ */
 export async function readParameters(request: Request): Promise<URLSearchParams | null> {
-  if (request.method === "GET") {
-    return new URL(request.url).searchParams;
-  }
   const contentType = request.headers.get("content-type")?.toLowerCase() ?? "";
-  if (!contentType.startsWith("application/x-www-form-urlencoded")) {
+  if (request.method !== "GET" && !contentType.startsWith("application/x-www-form-urlencoded")) {
     return null;
   }
-  return new URLSearchParams(await request.text());
+  const params =
+    request.method === "GET"
+      ? new URL(request.url).searchParams
+      : new URLSearchParams(await request.text());
+  return new URLSearchParams([...params].filter(([, value]) => value !== ""));
 }

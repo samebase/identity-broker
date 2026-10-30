@@ -92,17 +92,20 @@ npx convex run identityBroker:registerClient '{"appId":"bristol","redirectUri":"
 ```
 
 The reply holds the `issuer`, the `clientId`, and the `clientSecret`, which only this reply carries.
-The first client of an `appId` creates the app as a first-party app. `createApp` first makes an app
-with `firstParty` false. A Convex Auth v2 app points its generic OAuth method at
-`<issuer>/authorize` and `<issuer>/token`; see the [docs](docs/consumers.md).
+The first client of an `appId` creates the app as a first-party app. For an app that is not your
+own, run `createApp` with `firstParty` false first. A Convex Auth v2 app points its generic OAuth
+method at `<issuer>/authorize` and `<issuer>/token`; see the [docs](docs/consumers.md).
 
 When a deployment goes away, `identityBroker:deleteClient` deletes its client. A client that is gone
 is no error.
 
 ## Standards
 
-OAuth 2.1 (code flow, PKCE S256, exact redirect URIs, `iss` on responses), OpenID Connect Core and
-Discovery, RFC 8414, RFC 9207, RFC 9700. Departures are named in [docs/design.md](docs/design.md).
+OAuth 2.0 and the OAuth 2.1 draft (code flow, PKCE S256, exact redirect URIs, `iss` on responses),
+OpenID Connect Core and Discovery, RFC 8414, RFC 9207, RFC 9700, and the JWT, JWS, JWK and cookie
+standards under them. A client gets its credentials out of band, which RFC 6749 section 2 leaves
+open. [docs/standards.md](docs/standards.md) lists each with its sections and status, and departures
+are named in [docs/design.md](docs/design.md).
 
 ## License
 

@@ -29,6 +29,7 @@ import {
 import { parseKeySet, publicJwks, SIGNING_ALGORITHM, type KeySet } from "./keys.js";
 import {
   canonicalEmail,
+  isSecureUrl,
   parseRedirectUri,
   readBearerToken,
   readClientAuthentication,
@@ -96,6 +97,9 @@ type Ctx = GenericActionCtx<GenericDataModel>;
 
 export function defineIdentityBroker(config: IdentityBrokerConfig) {
   const issuerUrl = new URL(config.issuer);
+  if (!isSecureUrl(issuerUrl)) {
+    throw new Error("The issuer must be https, or http on a loopback host for local development");
+  }
   if (issuerUrl.search !== "" || issuerUrl.hash !== "") {
     throw new Error("The issuer must not have a query or fragment");
   }
@@ -103,9 +107,9 @@ export function defineIdentityBroker(config: IdentityBrokerConfig) {
   const prefix = issuerUrl.pathname.replace(/\/$/, "");
   const path = (suffix: string) => `${prefix}${suffix}`;
   /**
-   * The chooser binds its request to the browser that saw it with one cookie per request, named
-   * after the request id, so two sign-ins in one browser keep their own. `__Host-` needs Path=/, so
-   * a path issuer uses a plain name scoped to its path.
+   * `/authorize` binds each request to the browser that started it (RFC 9700 section 2.1.1) with one
+   * cookie per request, named after the request id, so two sign-ins in one browser keep their own.
+   * `__Host-` needs Path=/, so a path issuer uses a plain name scoped to its path.
    */
   const txnCookiePrefix = prefix === "" ? "__Host-broker_txn_" : "broker_txn_";
   const txnCookieAttributes = `Path=${prefix === "" ? "/" : prefix}; HttpOnly; Secure; SameSite=Lax`;
@@ -136,17 +140,11 @@ export function defineIdentityBroker(config: IdentityBrokerConfig) {
     return cookies;
   }
 
-  /**
-   * Whether the browser holds the cookie whose hash a chooser request stores. A first-party request
-   * that skipped the chooser stores none and needs none.
-   */
+  /** Whether the browser holds the cookie whose hash the request stores. */
   async function browserBound(
     request: Request,
-    stored: { requestId: string; txnCookieHash?: string },
+    stored: { requestId: string; txnCookieHash: string },
   ): Promise<boolean> {
-    if (stored.txnCookieHash === undefined) {
-      return true;
-    }
     const cookie = readTxnCookies(request).get(stored.requestId);
     return cookie !== undefined && (await sha256Hex(cookie)) === stored.txnCookieHash;
   }
@@ -348,8 +346,8 @@ export function defineIdentityBroker(config: IdentityBrokerConfig) {
       rest.value.connector === undefined ? undefined : connectors.get(rest.value.connector);
     const only = connectors.size === 1 ? [...connectors.values()][0] : undefined;
     const chosen = app.firstParty ? (named ?? only) : undefined;
-    // The request moves on only with this cookie, so a client that fetches the chooser itself cannot
-    // send a user's browser on from it.
+    // Every later step needs this cookie: a client that fetches the chooser itself cannot send a
+    // user's browser on from it, and a provider callback finishes only where the sign-in started.
     const txnCookie = randomToken(32);
     const now = Date.now();
     const requestId = randomToken(24);
@@ -363,12 +361,13 @@ export function defineIdentityBroker(config: IdentityBrokerConfig) {
       ...(rest.value.nonce === undefined ? {} : { nonce: rest.value.nonce }),
       codeChallenge: rest.value.codeChallenge,
       freshLogin,
-      ...(chosen === undefined ? { txnCookieHash: await sha256Hex(txnCookie) } : {}),
+      txnCookieHash: await sha256Hex(txnCookie),
       createdAt: now,
       expiresAt: now + AUTH_REQUEST_TTL_MS,
     });
+    const setCookie = `${txnCookiePrefix}${requestId}=${txnCookie}; ${txnCookieAttributes}; Max-Age=${AUTH_REQUEST_TTL_MS / 1000}`;
     if (chosen !== undefined) {
-      return await startConnector(ctx, {
+      const response = await startConnector(ctx, {
         connector: chosen,
         request: {
           requestId,
@@ -380,6 +379,8 @@ export function defineIdentityBroker(config: IdentityBrokerConfig) {
         appName: app.name,
         clearCookie: undefined,
       });
+      response.headers.append("Set-Cookie", setCookie);
+      return response;
     }
     const page = chooserPage({
       appName: app.name,
@@ -392,10 +393,7 @@ export function defineIdentityBroker(config: IdentityBrokerConfig) {
       })),
       denyHref: `${path("/continue")}?request=${encodeURIComponent(requestId)}&deny=1`,
     });
-    page.headers.append(
-      "Set-Cookie",
-      `${txnCookiePrefix}${requestId}=${txnCookie}; ${txnCookieAttributes}; Max-Age=${AUTH_REQUEST_TTL_MS / 1000}`,
-    );
+    page.headers.append("Set-Cookie", setCookie);
     return page;
   });
 
@@ -411,8 +409,7 @@ export function defineIdentityBroker(config: IdentityBrokerConfig) {
         404,
       );
     }
-    // Only a request that showed the chooser has links to continue.
-    if (stored.txnCookieHash === undefined || !(await browserBound(request, stored))) {
+    if (!(await browserBound(request, stored))) {
       return unboundPage();
     }
     const back = {
@@ -787,9 +784,9 @@ export function defineIdentityBroker(config: IdentityBrokerConfig) {
     }
     const params = new URLSearchParams(await request.text());
     const authorization = request.headers.get("authorization");
-    // RFC 6749 section 5.2: a client that authenticated with the header gets a 401 with a challenge.
-    const challenge: Record<string, string> =
-      authorization === null ? {} : { "WWW-Authenticate": 'Basic realm="token"' };
+    // A 401 carries a challenge (RFC 9110 section 15.5.2), which also names the scheme this endpoint
+    // takes for a client that sent its secret in the body (RFC 6749 section 5.2).
+    const challenge = { "WWW-Authenticate": 'Basic realm="token"' };
     const clientAuth = readClientAuthentication(authorization, params);
     if (!clientAuth.ok) {
       return oauthError(

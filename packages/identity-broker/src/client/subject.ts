@@ -1,3 +1,5 @@
+import { base64url } from "jose";
+
 /**
  * The pairwise subject of OIDC Core 8.1 with the app as the sector: deterministic, not reversible,
  * and the same for every deployment of an app.
@@ -10,10 +12,7 @@ export async function pairwiseSubject(args: {
 }): Promise<string> {
   const input = `${args.appId}\u0000${args.connector}\u0000${args.upstreamId}\u0000${args.salt}`;
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(input));
-  return btoa(String.fromCharCode(...new Uint8Array(digest)))
-    .replace(/\+/g, "-")
-    .replace(/\//g, "_")
-    .replace(/=+$/, "");
+  return base64url.encode(new Uint8Array(digest));
 }
 
 export async function sha256Hex(input: string): Promise<string> {
@@ -25,10 +24,7 @@ export async function sha256Hex(input: string): Promise<string> {
 export function randomToken(bytes = 32): string {
   const buffer = new Uint8Array(bytes);
   crypto.getRandomValues(buffer);
-  return btoa(String.fromCharCode(...buffer))
-    .replace(/\+/g, "-")
-    .replace(/\//g, "_")
-    .replace(/=+$/, "");
+  return base64url.encode(buffer);
 }
 
 /** A six-digit code for the email connector, uniform over 000000 to 999999. */
