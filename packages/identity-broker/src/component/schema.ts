@@ -94,23 +94,10 @@ export default defineSchema({
     appId: string(),
     name: string(),
     firstParty: boolean(),
-    /**
-     * Exact hosts or `*.suffix` patterns a client callback may use through `/register`, e.g.
-     * `*.convex.site`. `registerClient` does not read it.
-     */
+    /** No longer read. The rows of a hub from before 0.8.0 still hold it. */
     allowedCallbackHosts: optional(array(string())),
     createdAt: number(),
   }).index("by_app_id", ["appId"]),
-
-  registrationTokens: defineTable({
-    tokenHash: string(),
-    appId: string(),
-    expiresAt: number(),
-    createdAt: number(),
-  })
-    .index("by_token_hash", ["tokenHash"])
-    .index("by_app_id", ["appId"])
-    .index("by_expires_at", ["expiresAt"]),
 
   clients: defineTable({
     clientId: string(),
