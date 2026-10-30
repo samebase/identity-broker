@@ -13,6 +13,7 @@ import {
   ISSUER,
   pkce,
   sha256Hex,
+  txnCookie,
   type Harness,
 } from "./harness.test.helper.js";
 
@@ -53,7 +54,7 @@ async function completeUpstream(h: Harness, authorizeResponse: Response) {
   const callback = new URL(upstream.searchParams.get("redirect_uri") ?? "");
   callback.searchParams.set("code", "upstream-code");
   callback.searchParams.set("state", state);
-  return await h.fetchBroker(callback);
+  return await h.fetchBroker(callback, { headers: txnCookie(authorizeResponse) });
 }
 
 async function exchange(
@@ -79,6 +80,18 @@ async function exchange(
     }).toString(),
   });
 }
+
+describe("issuer", () => {
+  test("is https, or http on a loopback host", () => {
+    const config = { component, keys: () => undefined, connectors: [fakeUpstream().connector] };
+    expect(() => defineIdentityBroker({ ...config, issuer: "http://auth.test" })).toThrow(
+      "must be https",
+    );
+    expect(() =>
+      defineIdentityBroker({ ...config, issuer: "http://127.0.0.1:3211" }),
+    ).not.toThrow();
+  });
+});
 
 describe("metadata", () => {
   test("both discovery documents and the JWKS", async () => {
@@ -223,11 +236,14 @@ describe("authorization code flow with an OAuth connector", () => {
     const { verifier, challenge } = await pkce();
 
     const started = await h.fetchBroker(authorizeUrl(h, { clientId, challenge }));
-    // A first-party request that skips the chooser sets no cookie and completes without one.
-    expect(started.headers.get("set-cookie")).toBeNull();
+    // A first-party request skips the chooser, not the binding to the browser that started it.
+    expect(started.headers.get("set-cookie")).toMatch(
+      /^__Host-broker_txn_[^=]+=[^;]+; Path=\/; HttpOnly; Secure; SameSite=Lax; Max-Age=600$/,
+    );
     const back = await completeUpstream(h, started);
     expect(back.status).toBe(302);
-    expect(back.headers.get("set-cookie")).toBeNull();
+    // Sending the browser back to the client deletes the cookie.
+    expect(back.headers.get("set-cookie")).toMatch(/Max-Age=0$/);
     const location = new URL(back.headers.get("location") ?? "");
     expect(location.origin + location.pathname).toBe(REDIRECT_URI);
     expect(location.searchParams.get("state")).toBe("client-state");
@@ -473,7 +489,7 @@ describe("authorization code flow with an OAuth connector", () => {
     const callback = new URL(upstream.searchParams.get("redirect_uri") ?? "");
     callback.searchParams.set("code", "upstream-code");
     callback.searchParams.set("state", state);
-    const back = await h.fetchBroker(callback);
+    const back = await h.fetchBroker(callback, { headers: txnCookie(started) });
     expect(back.status).toBe(302);
     return {
       prompt: upstream.searchParams.get("prompt"),
@@ -569,6 +585,69 @@ describe("authorization code flow with an OAuth connector", () => {
     }
   });
 
+  test("a first-party callback in another browser is refused and stays claimable", async () => {
+    const upstream = fakeUpstream();
+    const h = await createHarness({ connectors: [upstream.connector] });
+    const { clientId } = await h.registerClient({
+      appName: "Bristol",
+      firstParty: true,
+      redirectUri: REDIRECT_URI,
+    });
+    const { challenge } = await pkce();
+    const started = await h.fetchBroker(authorizeUrl(h, { clientId, challenge }));
+    const upstreamUrl = new URL(started.headers.get("location") ?? "");
+    const callback = new URL(upstreamUrl.searchParams.get("redirect_uri") ?? "");
+    callback.searchParams.set("code", "upstream-code");
+    callback.searchParams.set("state", upstreamUrl.searchParams.get("state") ?? "");
+
+    const refused = await h.fetchBroker(callback);
+    expect(refused.status).toBe(400);
+    expect(await refused.text()).toContain("did not start in this browser");
+
+    const back = await h.fetchBroker(callback, { headers: txnCookie(started) });
+    expect(new URL(back.headers.get("location") ?? "").searchParams.has("code")).toBe(true);
+  });
+
+  test("a Request Object is refused, not ignored", async () => {
+    const h = await createHarness({ connectors: [fakeUpstream().connector] });
+    const { clientId } = await h.registerClient({
+      appName: "Bristol",
+      firstParty: true,
+      redirectUri: REDIRECT_URI,
+    });
+    const { challenge } = await pkce();
+    for (const [parameter, error] of [
+      ["request", "request_not_supported"],
+      ["request_uri", "request_uri_not_supported"],
+    ] as const) {
+      const refused = await h.fetchBroker(
+        authorizeUrl(h, { clientId, challenge, extra: { [parameter]: "x" } }),
+      );
+      const location = new URL(refused.headers.get("location") ?? "");
+      expect(location.origin + location.pathname).toBe(REDIRECT_URI);
+      expect(location.searchParams.get("error")).toBe(error);
+      expect(location.searchParams.get("state")).toBe("client-state");
+    }
+  });
+
+  test("a parameter sent without a value counts as omitted", async () => {
+    const upstream = fakeUpstream();
+    const h = await createHarness({ connectors: [upstream.connector] });
+    const { clientId } = await h.registerClient({
+      appName: "Bristol",
+      firstParty: true,
+      redirectUri: REDIRECT_URI,
+    });
+    const { challenge } = await pkce();
+    // An empty max_age is no freshness request, which this connector would have to refuse.
+    const started = await h.fetchBroker(
+      authorizeUrl(h, { clientId, challenge, extra: { max_age: "", state: "" } }),
+    );
+    const location = new URL((await completeUpstream(h, started)).headers.get("location") ?? "");
+    expect(location.searchParams.has("code")).toBe(true);
+    expect(location.searchParams.has("state")).toBe(false);
+  });
+
   test("a replayed or unknown upstream state is refused, a denied upstream goes back as access_denied", async () => {
     const upstream = fakeUpstream();
     const h = await createHarness({ connectors: [upstream.connector] });
@@ -583,9 +662,10 @@ describe("authorization code flow with an OAuth connector", () => {
     const callback = new URL(upstreamUrl.searchParams.get("redirect_uri") ?? "");
     callback.searchParams.set("state", upstreamUrl.searchParams.get("state") ?? "");
 
+    const browser = { headers: txnCookie(started) };
     const denied = new URL(callback);
     denied.searchParams.set("error", "access_denied");
-    const deniedResponse = await h.fetchBroker(denied);
+    const deniedResponse = await h.fetchBroker(denied, browser);
     expect(deniedResponse.status).toBe(302);
     expect(new URL(deniedResponse.headers.get("location") ?? "").searchParams.get("error")).toBe(
       "access_denied",
@@ -593,11 +673,11 @@ describe("authorization code flow with an OAuth connector", () => {
 
     // The claim consumed the request: the same state cannot be used again.
     callback.searchParams.set("code", "upstream-code");
-    const replay = await h.fetchBroker(callback);
+    const replay = await h.fetchBroker(callback, browser);
     expect(replay.status).toBe(400);
     const unknown = new URL(callback);
     unknown.searchParams.set("state", "nope");
-    expect((await h.fetchBroker(unknown)).status).toBe(400);
+    expect((await h.fetchBroker(unknown, browser)).status).toBe(400);
   });
 
   test("a state started for one connector does not finish through another's callback", async () => {
@@ -640,7 +720,8 @@ describe("authorization code flow with an OAuth connector", () => {
       for (const [key, value] of Object.entries(params)) {
         url.searchParams.set(key, value);
       }
-      const location = new URL((await h.fetchBroker(url)).headers.get("location") ?? "");
+      const back = await h.fetchBroker(url, { headers: txnCookie(started) });
+      const location = new URL(back.headers.get("location") ?? "");
       return {
         error: location.searchParams.get("error"),
         description: location.searchParams.get("error_description"),
@@ -719,7 +800,8 @@ describe("authorization code flow with an OAuth connector", () => {
     // The Basic client's credentials in the body are not its method: a 401 without a challenge.
     const inBody = await redeem({}, { client_id: clientId, client_secret: clientSecret });
     expect(inBody.status).toBe(401);
-    expect(inBody.headers.get("www-authenticate")).toBeNull();
+    // A 401 always carries a challenge, also for a client that sent its secret in the body.
+    expect(inBody.headers.get("www-authenticate")).toBe('Basic realm="token"');
     // None of the refusals consumed the code; the registered method alone redeems it.
     expect((await redeem({ Authorization: basic(clientId, clientSecret) }, {})).status).toBe(200);
   });
@@ -953,7 +1035,7 @@ describe("email connector", () => {
     const post = (fields: Record<string, string>) =>
       h.fetchBroker(`${ISSUER}/connectors/email`, {
         method: "POST",
-        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        headers: { "Content-Type": "application/x-www-form-urlencoded", ...txnCookie(page) },
         body: new URLSearchParams({ request: requestId, ...fields }).toString(),
       });
 
@@ -1076,14 +1158,12 @@ describe("email connector", () => {
       redirectUri: REDIRECT_URI,
     });
     const { challenge } = await pkce();
-    const requestId =
-      (await (await h.fetchBroker(authorizeUrl(h, { clientId, challenge }))).text()).match(
-        /name="request" value="([^"]+)"/,
-      )?.[1] ?? "";
+    const page = await h.fetchBroker(authorizeUrl(h, { clientId, challenge }));
+    const requestId = (await page.text()).match(/name="request" value="([^"]+)"/)?.[1] ?? "";
     const post = (fields: Record<string, string>) =>
       h.fetchBroker(`${ISSUER}/connectors/email`, {
         method: "POST",
-        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        headers: { "Content-Type": "application/x-www-form-urlencoded", ...txnCookie(page) },
         body: new URLSearchParams({ request: requestId, ...fields }).toString(),
       });
     await post({ step: "send", email: "a@b.co" });
@@ -1137,7 +1217,7 @@ describe("email send limits", () => {
       return (fields: Record<string, string>) =>
         h.fetchBroker(`${ISSUER}/connectors/email`, {
           method: "POST",
-          headers: { "Content-Type": "application/x-www-form-urlencoded" },
+          headers: { "Content-Type": "application/x-www-form-urlencoded", ...txnCookie(page) },
           body: new URLSearchParams({ request: requestId, ...fields }).toString(),
         });
     }
@@ -1260,6 +1340,7 @@ describe("cleanup", () => {
       scope: "openid",
       codeChallenge: "c",
       freshLogin: false,
+      txnCookieHash: "h",
       createdAt: now - 3_600_000,
       expiresAt: now - 1,
     });
@@ -1378,6 +1459,7 @@ describe("cleanup", () => {
       scope: "openid",
       codeChallenge: "c",
       freshLogin: false,
+      txnCookieHash: "h",
       createdAt: now - 600_000,
     } as const;
     await h.t.run(async (ctx) => {

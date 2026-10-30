@@ -43,11 +43,11 @@ const authRequestFields = {
   /** `prompt=login` or `max_age` was sent: the connector must reauthenticate or refuse. */
   freshLogin: boolean(),
   /**
-   * SHA-256 hex of the request's transaction cookie, set with the chooser page. `/continue`, the
-   * connector callback, and the email steps need the cookie, so only the browser that saw the
-   * chooser can move the request on. Absent when /authorize skipped the chooser.
+   * SHA-256 hex of the request's transaction cookie, set by `/authorize`. `/continue`, the connector
+   * callback, and the email steps need the cookie, so only the browser that started the request can
+   * move it on.
    */
-  txnCookieHash: optional(string()),
+  txnCookieHash: string(),
   createdAt: number(),
   expiresAt: number(),
 };

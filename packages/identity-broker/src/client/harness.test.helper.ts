@@ -128,6 +128,11 @@ export async function createHarness(options: {
   return { t, broker, http, fetchBroker, registerClient, runRegisterClient, keySet, issuer };
 }
 
+/** The `Cookie` header of the browser that received `response`, with its transaction cookie. */
+export function txnCookie(response: Response): { Cookie: string } {
+  return { Cookie: (response.headers.get("set-cookie") ?? "").split(";")[0] ?? "" };
+}
+
 export async function sha256Hex(input: string): Promise<string> {
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(input));
   return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");

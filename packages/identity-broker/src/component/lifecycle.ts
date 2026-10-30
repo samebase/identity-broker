@@ -102,11 +102,11 @@ async function cleanupBatch(
 }
 
 /**
- * Deletes what has run out: expired requests, codes and registration tokens, preview clients
- * nobody used for `previewClientMaxAgeMs` when the host passes it, audit rows older than
- * `signInRetentionMs`, and email send rows outside the send window. The host schedules this daily
- * from a cron; production and development clients are never touched. The counts are this call's
- * batch: a full batch schedules the next one, so one call drains everything older than `now`.
+ * Deletes what has run out: expired requests and codes, preview clients nobody used for
+ * `previewClientMaxAgeMs` when the host passes it, audit rows older than `signInRetentionMs`, and
+ * email send rows outside the send window. The host schedules this daily from a cron; production
+ * and development clients are never touched. The counts are this call's batch: a full batch
+ * schedules the next one, so one call drains everything older than `now`.
  */
 export const cleanup = mutation({
   args: vCleanupArgs,

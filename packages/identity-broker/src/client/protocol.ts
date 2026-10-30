@@ -35,7 +35,12 @@ function isLoopbackHost(hostname: string): boolean {
   return hostname === "localhost" || hostname === "127.0.0.1" || hostname === "[::1]";
 }
 
-/** A redirect URI: absolute, no fragment, https, or http on a loopback host for local development. */
+/** https, or http on a loopback host for local development. */
+export function isSecureUrl(url: URL): boolean {
+  return url.protocol === "https:" || (url.protocol === "http:" && isLoopbackHost(url.hostname));
+}
+
+/** A redirect URI: absolute, no fragment, and secure. */
 export function parseRedirectUri(value: string): URL | null {
   if (value.length === 0 || value.length > MAX_REDIRECT_URI_LENGTH) {
     return null;
@@ -46,16 +51,7 @@ export function parseRedirectUri(value: string): URL | null {
   } catch {
     return null;
   }
-  if (url.hash.length > 0) {
-    return null;
-  }
-  if (url.protocol === "https:") {
-    return url;
-  }
-  if (url.protocol === "http:" && isLoopbackHost(url.hostname)) {
-    return url;
-  }
-  return null;
+  return url.hash.length === 0 && isSecureUrl(url) ? url : null;
 }
 
 export type AuthorizeInput = {
@@ -97,6 +93,13 @@ export function validateAuthorizeRest(
   params: URLSearchParams,
   target: { clientId: string; redirectUri: string },
 ): Validation<AuthorizeInput> {
+  // Discovery says neither is supported, and OIDC Core sections 6.1 and 6.2 name these errors.
+  if (params.has("request")) {
+    return invalid(400, "request_not_supported", "Request Objects are not supported.");
+  }
+  if (params.has("request_uri")) {
+    return invalid(400, "request_uri_not_supported", "request_uri is not supported.");
+  }
   if (params.get("response_type") !== "code") {
     return invalid(400, "unsupported_response_type", 'response_type must be "code".');
   }
@@ -165,7 +168,7 @@ export type TokenInput = {
 /**
  * Client credentials from HTTP Basic (RFC 6749 section 2.3.1) or the form body. The first look at a
  * token request, so it also refuses a repeated parameter (RFC 6749 section 3.2) and a request that
- * uses both methods (section 2.3.1): an Authorization header and a `client_secret` in the body. A
+ * uses both methods (section 2.3): an Authorization header and a `client_secret` in the body. A
  * `client_id` in the body names the client and is not a method; an empty `client_secret` counts as
  * omitted (section 3.2).
  */

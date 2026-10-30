@@ -1,7 +1,7 @@
 import { v, type Infer } from "convex/values";
+import { calculatePKCECodeChallenge } from "oauth4webapi";
 import { mutation, query, type MutationCtx } from "./_generated/server";
 import type { Doc } from "./_generated/dataModel";
-import { sha256Base64Url } from "./crypto";
 import { vAuthRequest, vTokenEndpointAuthMethod, vUpstreamIdentity } from "./schema";
 
 const { array, boolean, literal, number, object, optional, string, union } = v;
@@ -39,7 +39,7 @@ export const create = mutation({
     nonce: optional(string()),
     codeChallenge: string(),
     freshLogin: boolean(),
-    txnCookieHash: optional(string()),
+    txnCookieHash: string(),
     createdAt: number(),
     expiresAt: number(),
   },
@@ -56,7 +56,7 @@ export const create = mutation({
       ...optionalField("nonce", args.nonce),
       codeChallenge: args.codeChallenge,
       freshLogin: args.freshLogin,
-      ...optionalField("txnCookieHash", args.txnCookieHash),
+      txnCookieHash: args.txnCookieHash,
       createdAt: args.createdAt,
       expiresAt: args.expiresAt,
     });
@@ -139,8 +139,8 @@ type ClaimResult = Infer<typeof vClaimResult>;
  * The callback of `connector` arrived with its state. Claiming moves the request to `claimed` in
  * the same mutation that finds it, so a replayed or raced callback finds nothing to claim. A
  * request started for another connector is not claimed: its state cannot finish elsewhere. A
- * request that went through the chooser is claimed only from the browser that holds its
- * transaction cookie; any other browser gets `unbound` and the request keeps waiting.
+ * request is claimed only from the browser that holds its transaction cookie; any other browser
+ * gets `unbound` and the request keeps waiting.
  */
 export const claimUpstream = mutation({
   args: {
@@ -159,10 +159,7 @@ export const claimUpstream = mutation({
     if (request === null || request.status !== "upstream" || request.connector !== args.connector) {
       return { status: "missing" };
     }
-    if (
-      request.txnCookieHash !== undefined &&
-      !args.txnCookieHashes.includes(request.txnCookieHash)
-    ) {
+    if (!args.txnCookieHashes.includes(request.txnCookieHash)) {
       return { status: "unbound" };
     }
     const back = returnTo(request);
@@ -504,7 +501,7 @@ export const exchangeCode = mutation({
       };
     }
     if (code.usedAt !== undefined) {
-      // Replay: the code and its request are revoked (RFC 9700 section 4.5.3).
+      // Replay: the code and its request are revoked (RFC 6749 section 4.1.2).
       await ctx.db.delete("authorizationCodes", code._id);
       const request = await ctx.db.get("authRequests", code.authRequestId);
       if (request !== null) {
@@ -541,7 +538,7 @@ export const exchangeCode = mutation({
         description: "redirect_uri does not match the authorization request.",
       };
     }
-    if ((await sha256Base64Url(args.codeVerifier)) !== request.codeChallenge) {
+    if ((await calculatePKCECodeChallenge(args.codeVerifier)) !== request.codeChallenge) {
       return {
         ok: false,
         error: "invalid_grant",
@@ -594,7 +591,7 @@ function baseFields(request: Doc<"authRequests">) {
     ...optionalField("nonce", request.nonce),
     codeChallenge: request.codeChallenge,
     freshLogin: request.freshLogin,
-    ...optionalField("txnCookieHash", request.txnCookieHash),
+    txnCookieHash: request.txnCookieHash,
     createdAt: request.createdAt,
     expiresAt: request.expiresAt,
   };
