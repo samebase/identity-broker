@@ -85,53 +85,47 @@ export async function createHarness(options: {
     });
   }
 
-  /** An app, a registration token for it, and one registered client with `redirectUri`. */
+  /** The admin function `registerClient`, as `npx convex run` or a stack runs it. */
+  async function runRegisterClient(args: {
+    appId: string;
+    redirectUri: string;
+    deploymentType: "production" | "development" | "preview";
+    tokenEndpointAuthMethod: "client_secret_post" | "client_secret_basic";
+  }): Promise<{ issuer: string; clientId: string; clientSecret: string }> {
+    const { registerClient: admin } = broker.admin();
+    return await t.action(
+      async (ctx) =>
+        // @ts-expect-error internalMutationGeneric keeps the function as _handler; RegisteredMutation does not declare it.
+        await admin._handler(ctx, { ...args, clientName: "dev", softwareVersion: "dev-1" }),
+    );
+  }
+
+  /** An app and one client with `redirectUri`, through the admin function that a stack runs. */
   async function registerClient(args: {
     appName: string;
     firstParty: boolean;
     redirectUri: string;
+    /** As @samebase/alchemy-convex registers: Convex Auth posts the client credentials. */
+    tokenEndpointAuthMethod?: "client_secret_post" | "client_secret_basic";
+    deploymentType?: "production" | "development" | "preview";
   }) {
-    const now = Date.now();
     const appId = `${args.appName.toLowerCase()}-test`;
     await t.mutation(api.apps.create, {
       appId,
       name: args.appName,
       firstParty: args.firstParty,
-      allowedCallbackHosts: ["*.convex.site", "127.0.0.1", "app.test"],
-      createdAt: now,
+      createdAt: Date.now(),
     });
-    const token = `rt_test-${appId}`;
-    await t.mutation(api.registration.mintToken, {
-      tokenHash: await sha256Hex(token),
+    const client = await runRegisterClient({
       appId,
-      expiresAt: now + 60_000,
-      createdAt: now,
+      redirectUri: args.redirectUri,
+      deploymentType: args.deploymentType ?? "development",
+      tokenEndpointAuthMethod: args.tokenEndpointAuthMethod ?? "client_secret_post",
     });
-    const response = await fetchBroker(`${issuer}/register`, {
-      method: "POST",
-      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-      body: JSON.stringify({
-        redirect_uris: [args.redirectUri],
-        client_name: `${args.appName} dev`,
-        software_version: "dev-1",
-        deployment_type: "development",
-        // As @samebase/alchemy-identity-hub registers: Convex Auth posts the client credentials.
-        token_endpoint_auth_method: "client_secret_post",
-      }),
-    });
-    if (response.status !== 201) {
-      throw new Error(`Registration failed: ${response.status} ${await response.text()}`);
-    }
-    const client = await response.json();
-    return {
-      appId,
-      token,
-      clientId: String(client.client_id),
-      clientSecret: String(client.client_secret),
-    };
+    return { appId, clientId: client.clientId, clientSecret: client.clientSecret };
   }
 
-  return { t, broker, http, fetchBroker, registerClient, keySet, issuer };
+  return { t, broker, http, fetchBroker, registerClient, runRegisterClient, keySet, issuer };
 }
 
 export async function sha256Hex(input: string): Promise<string> {

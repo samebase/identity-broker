@@ -122,177 +122,62 @@ describe("metadata", () => {
 });
 
 describe("registration", () => {
-  test("a host allowed later registers", async () => {
+  test("the first client creates a first-party app; the next one joins it", async () => {
     const h = await createHarness({ connectors: [fakeUpstream().connector] });
-    const { appId, token } = await h.registerClient({
-      appName: "Bristol",
-      firstParty: true,
+    const client = {
+      appId: "scout",
       redirectUri: REDIRECT_URI,
-    });
-    const register = () =>
-      h.fetchBroker(`${ISSUER}/register`, {
-        method: "POST",
-        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-        body: JSON.stringify({
-          redirect_uris: ["https://bristol.example/oauth/hub/callback"],
-          client_name: "prod",
-          deployment_type: "production",
-        }),
-      });
-    expect((await register()).status).toBe(400);
-    await h.t.mutation(api.apps.setAllowedCallbackHosts, {
-      appId,
-      allowedCallbackHosts: ["bristol.example"],
-    });
-    const registered = await register();
-    expect(registered.status).toBe(201);
-    // RFC 7591 section 2: without token_endpoint_auth_method, the client uses Basic.
-    expect((await registered.json()).token_endpoint_auth_method).toBe("client_secret_basic");
+      deploymentType: "preview",
+      tokenEndpointAuthMethod: "client_secret_post",
+    } as const;
+    const first = await h.runRegisterClient(client);
+    expect(first.issuer).toBe(ISSUER);
+    const second = await h.runRegisterClient(client);
+    expect(second.clientId).not.toBe(first.clientId);
+    expect(await h.t.query(api.apps.list, {})).toEqual([
+      { appId: "scout", name: "scout", firstParty: true, createdAt: expect.any(Number) },
+    ]);
+    const stored = await h.t.query(api.clients.get, { clientId: first.clientId });
+    expect(stored?.secretHash).toBe(await sha256Hex(first.clientSecret));
+    expect(JSON.stringify(stored)).not.toContain(first.clientSecret);
   });
 
-  test("tokens are listed as hashes and can be revoked; a client can be deleted", async () => {
+  test("an app that exists keeps its row", async () => {
     const h = await createHarness({ connectors: [fakeUpstream().connector] });
-    const { appId, token, clientId } = await h.registerClient({
+    await h.registerClient({ appName: "Third", firstParty: false, redirectUri: REDIRECT_URI });
+    expect((await h.t.query(api.apps.get, { appId: "third-test" }))?.firstParty).toBe(false);
+  });
+
+  test("a redirect URI that is not https, or http on a loopback host, is refused", async () => {
+    const h = await createHarness({ connectors: [fakeUpstream().connector] });
+    await expect(
+      h.runRegisterClient({
+        appId: "scout",
+        redirectUri: "http://app.test/cb",
+        deploymentType: "preview",
+        tokenEndpointAuthMethod: "client_secret_post",
+      }),
+    ).rejects.toThrow("redirect URI");
+    expect(await h.t.query(api.apps.list, {})).toEqual([]);
+  });
+
+  test("a deleted client cannot sign in", async () => {
+    const h = await createHarness({ connectors: [fakeUpstream().connector] });
+    const { clientId } = await h.registerClient({
       appName: "Bristol",
       firstParty: true,
       redirectUri: REDIRECT_URI,
     });
-    const tokens = await h.t.query(api.registration.listTokens, { appId });
-    expect(tokens).toEqual([
-      {
-        tokenHash: await sha256Hex(token),
-        expiresAt: expect.any(Number),
-        createdAt: expect.any(Number),
-      },
-    ]);
-    expect(JSON.stringify(tokens)).not.toContain(token);
-    await h.t.mutation(api.registration.revokeToken, { tokenHash: await sha256Hex(token) });
-    const revoked = await h.fetchBroker(`${ISSUER}/register`, {
-      method: "POST",
-      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-      body: JSON.stringify({
-        redirect_uris: [REDIRECT_URI],
-        client_name: "x",
-        deployment_type: "preview",
-      }),
-    });
-    expect(revoked.status).toBe(401);
     await h.t.mutation(api.clients.remove, { clientId });
     const { challenge } = await pkce();
     expect((await h.fetchBroker(authorizeUrl(h, { clientId, challenge }))).status).toBe(400);
   });
-
-  test("needs a live token and an allowed host", async () => {
-    const h = await createHarness({ connectors: [fakeUpstream().connector] });
-    const { token } = await h.registerClient({
-      appName: "Bristol",
-      firstParty: true,
-      redirectUri: REDIRECT_URI,
-    });
-    const noToken = await h.fetchBroker(`${ISSUER}/register`, { method: "POST", body: "{}" });
-    expect(noToken.status).toBe(401);
-    const badHost = await h.fetchBroker(`${ISSUER}/register`, {
-      method: "POST",
-      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-      body: JSON.stringify({
-        redirect_uris: ["https://evil.example/cb"],
-        client_name: "x",
-        deployment_type: "preview",
-      }),
-    });
-    expect(badHost.status).toBe(400);
-    expect((await badHost.json()).error).toBe("invalid_redirect_uri");
-    const expired = await h.fetchBroker(`${ISSUER}/register`, {
-      method: "POST",
-      headers: { Authorization: "Bearer rt_unknown", "Content-Type": "application/json" },
-      body: "{}",
-    });
-    expect(expired.status).toBe(401);
-  });
-
-  test("DELETE /register/<client_id> deletes a client only with its app's token", async () => {
-    const h = await createHarness({ connectors: [fakeUpstream().connector] });
-    const bristol = await h.registerClient({
-      appName: "Bristol",
-      firstParty: true,
-      redirectUri: REDIRECT_URI,
-    });
-    const other = await h.registerClient({
-      appName: "Other",
-      firstParty: true,
-      redirectUri: REDIRECT_URI,
-    });
-    const expiredToken = "rt_expired";
-    await h.t.mutation(api.registration.mintToken, {
-      tokenHash: await sha256Hex(expiredToken),
-      appId: bristol.appId,
-      expiresAt: Date.now() - 1,
-      createdAt: Date.now() - 60_000,
-    });
-    const unregister = (clientId: string, token: string | undefined) =>
-      h.fetchBroker(`${ISSUER}/register/${clientId}`, {
-        method: "DELETE",
-        headers: token === undefined ? {} : { Authorization: `Bearer ${token}` },
-      });
-    const exists = async (clientId: string) =>
-      (await h.t.query(api.clients.get, { clientId })) !== null;
-
-    for (const token of [undefined, "rt_unknown", expiredToken]) {
-      const refused = await unregister(bristol.clientId, token);
-      expect(refused.status).toBe(401);
-      expect((await refused.json()).error).toBe("invalid_token");
-    }
-    // Another app's live token gets the answer an unknown client gets, so it learns nothing.
-    const otherApp = await unregister(bristol.clientId, other.token);
-    const unknown = await unregister("cl_unknown", bristol.token);
-    expect(otherApp.status).toBe(404);
-    expect(unknown.status).toBe(404);
-    expect(await otherApp.json()).toEqual(await unknown.json());
-    expect(await exists(bristol.clientId)).toBe(true);
-
-    const deleted = await unregister(bristol.clientId, bristol.token);
-    expect(deleted.status).toBe(204);
-    expect(await deleted.text()).toBe("");
-    expect(await exists(bristol.clientId)).toBe(false);
-    expect(await exists(other.clientId)).toBe(true);
-    // A client that is already gone is 404.
-    expect((await unregister(bristol.clientId, bristol.token)).status).toBe(404);
-  });
-
-  test("DELETE /register/<client_id> deletes a client of any deployment type, under a path issuer too", async () => {
-    for (const issuer of [ISSUER, "https://samebase.test/identity"]) {
-      const h = await createHarness({ connectors: [fakeUpstream().connector], issuer });
-      const { token } = await h.registerClient({
-        appName: "Bristol",
-        firstParty: true,
-        redirectUri: REDIRECT_URI,
-      });
-      for (const deploymentType of ["production", "development", "preview"]) {
-        const registered = await h.fetchBroker(`${issuer}/register`, {
-          method: "POST",
-          headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-          body: JSON.stringify({
-            redirect_uris: [REDIRECT_URI],
-            client_name: deploymentType,
-            deployment_type: deploymentType,
-          }),
-        });
-        const clientId = String((await registered.json()).client_id);
-        const deleted = await h.fetchBroker(`${issuer}/register/${clientId}`, {
-          method: "DELETE",
-          headers: { Authorization: `Bearer ${token}` },
-        });
-        expect(deleted.status).toBe(204);
-        expect(await h.t.query(api.clients.get, { clientId })).toBeNull();
-      }
-    }
-  });
 });
 
 describe("app deletion", () => {
-  test("with the app row gone, its tokens and clients are refused before their rows are", async () => {
+  test("with the app row gone, its clients are refused before their rows are", async () => {
     const h = await createHarness({ connectors: [fakeUpstream().connector] });
-    const { appId, token, clientId, clientSecret } = await h.registerClient({
+    const { appId, clientId, clientSecret } = await h.registerClient({
       appName: "Bristol",
       firstParty: true,
       redirectUri: REDIRECT_URI,
@@ -304,7 +189,7 @@ describe("app deletion", () => {
     );
     const code = new URL(back.headers.get("location") ?? "").searchParams.get("code") ?? "";
     // What deleteApp leaves after its first transaction for an app with more than 200 clients: the
-    // app row is gone, and the token and the client wait for a later batch.
+    // app row is gone, and the client waits for a later batch.
     await h.t.run(async (ctx) => {
       const app = await ctx.db
         .query("apps")
@@ -313,17 +198,6 @@ describe("app deletion", () => {
       if (app !== null) await ctx.db.delete("apps", app._id);
     });
     expect(await h.t.query(api.clients.get, { clientId })).not.toBeNull();
-
-    const registered = await h.fetchBroker(`${ISSUER}/register`, {
-      method: "POST",
-      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-      body: JSON.stringify({
-        redirect_uris: [REDIRECT_URI],
-        client_name: "x",
-        deployment_type: "preview",
-      }),
-    });
-    expect(registered.status).toBe(401);
 
     const authorized = await h.fetchBroker(authorizeUrl(h, { clientId, challenge }));
     expect(authorized.status).toBe(302);
@@ -797,20 +671,12 @@ describe("authorization code flow with an OAuth connector", () => {
       firstParty: true,
       redirectUri: REDIRECT_URI,
     });
-    // Registered without token_endpoint_auth_method: client_secret_basic (RFC 7591 section 2).
-    const basicClient = await (
-      await h.fetchBroker(`${ISSUER}/register`, {
-        method: "POST",
-        headers: { Authorization: `Bearer ${posting.token}`, "Content-Type": "application/json" },
-        body: JSON.stringify({
-          redirect_uris: [REDIRECT_URI],
-          client_name: "Bristol preview",
-          deployment_type: "preview",
-        }),
-      })
-    ).json();
-    const clientId = String(basicClient.client_id);
-    const clientSecret = String(basicClient.client_secret);
+    const { clientId, clientSecret } = await h.runRegisterClient({
+      appId: posting.appId,
+      redirectUri: REDIRECT_URI,
+      deploymentType: "preview",
+      tokenEndpointAuthMethod: "client_secret_basic",
+    });
     const basic = (id: string, secret: string) => `Basic ${btoa(`${id}:${secret}`)}`;
     const { verifier, challenge } = await pkce();
     const back = await completeUpstream(
@@ -1351,14 +1217,13 @@ describe("email send limits", () => {
 });
 
 describe("cleanup", () => {
-  test("drops expired requests, codes and tokens and old audit rows; idle preview clients only when asked", async () => {
+  test("drops expired requests and codes and old audit rows; idle preview clients only when asked", async () => {
     const h = await createHarness({ connectors: [fakeUpstream().connector] });
     const now = Date.now();
     await h.t.mutation(api.apps.create, {
       appId: "a",
       name: "A",
       firstParty: true,
-      allowedCallbackHosts: ["app.test"],
       createdAt: now,
     });
     const client = {
@@ -1398,12 +1263,6 @@ describe("cleanup", () => {
       createdAt: now - 3_600_000,
       expiresAt: now - 1,
     });
-    await h.t.mutation(api.registration.mintToken, {
-      tokenHash: "expired-token-hash",
-      appId: "a",
-      expiresAt: now - 1,
-      createdAt: now - 86_400_000,
-    });
     await h.t.mutation(api.signIns.record, {
       appId: "a",
       clientId: "prod-old",
@@ -1419,7 +1278,6 @@ describe("cleanup", () => {
     ).toEqual({
       authRequests: 1,
       authorizationCodes: 0,
-      registrationTokens: 1,
       previewClients: 0,
       signIns: 1,
       emailSends: 0,
@@ -1435,7 +1293,6 @@ describe("cleanup", () => {
     ).toEqual({
       authRequests: 0,
       authorizationCodes: 0,
-      registrationTokens: 0,
       previewClients: 1,
       signIns: 0,
       emailSends: 0,
@@ -1454,7 +1311,6 @@ describe("cleanup", () => {
         appId: "a",
         name: "A",
         firstParty: true,
-        allowedCallbackHosts: ["app.test"],
         createdAt: now,
       });
       await h.t.mutation(api.clients.create, {

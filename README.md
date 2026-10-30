@@ -12,17 +12,16 @@ registers each deployment as a client at deploy time and never touches GitHub or
 ## What it is
 
 - `@samebase/identity-broker`: a Convex component plus the host-side endpoints. Authorization code
-  flow with PKCE, discovery, JWKS, dynamic client registration (RFC 7591) gated by per-app tokens,
-  userinfo. RS256 `id_token`s with pairwise subjects per app; a first-party app also gets the
-  connector's own id for the account in `connector_account_id`.
+  flow with PKCE, discovery, JWKS, userinfo, and an internal function that registers a client. RS256
+  `id_token`s with pairwise subjects per app; a first-party app also gets the connector's own id for
+  the account in `connector_account_id`.
 - Connectors are configuration: any OAuth 2.0 provider that publishes RFC 8414 metadata, any OpenID
   Connect provider, and an email code sent by your own action. `github()`, `google()` and `email()`
   are included.
 - A hub is a small Convex app that mounts the component. Fork
-  [samebase/identity-hub](https://github.com/samebase/identity-hub) for one.
-- `@samebase/alchemy-identity-hub`: an Alchemy v2 resource, `IdentityHub.Client`, that registers a
-  deployment as a client at deploy time. See
-  [packages/alchemy-identity-hub](https://github.com/samebase/identity-broker/tree/main/packages/alchemy-identity-hub).
+  [samebase/team-base](https://github.com/samebase/team-base) for one.
+- `Convex.HubClient` of [`@samebase/alchemy-convex`](https://github.com/samebase/alchemy-convex), an
+  Alchemy v2 resource, registers a deployment as a client at deploy time.
 
 ## Mount it
 
@@ -69,10 +68,7 @@ export default http;
 import { broker } from "./http";
 export const {
   createApp,
-  mintRegistrationToken,
-  listRegistrationTokens,
-  revokeRegistrationToken,
-  setAllowedCallbackHosts,
+  registerClient,
   deleteClient,
   deleteApp,
   listApps,
@@ -88,23 +84,25 @@ set: its salt makes every `sub`. `parseKeySet` checks a value's shape before a d
 
 ## Register an app's deployments
 
+Registration is an internal function of the hub, so it needs the hub's deploy key and no token of
+its own:
+
 ```sh
-npx convex run identityBroker:createApp '{"name":"Bristol","firstParty":true,"allowedCallbackHosts":["*.convex.site","127.0.0.1"]}'
-npx convex run identityBroker:mintRegistrationToken '{"appId":"bristol-ab12c"}'
+npx convex run identityBroker:registerClient '{"appId":"bristol","redirectUri":"https://bristol.example/oauth/hub/callback","deploymentType":"production","clientName":"prod","softwareVersion":"1","tokenEndpointAuthMethod":"client_secret_post"}'
 ```
 
-Each deployment then posts its callback URL to `/register` with that token as a Bearer token and
-gets a `client_id` and `client_secret`. A Convex Auth v2 app points its generic OAuth method at
+The reply holds the `issuer`, the `clientId`, and the `clientSecret`, which only this reply carries.
+The first client of an `appId` creates the app as a first-party app. `createApp` first makes an app
+with `firstParty` false. A Convex Auth v2 app points its generic OAuth method at
 `<issuer>/authorize` and `<issuer>/token`; see the [docs](docs/consumers.md).
 
-When a deployment goes away, `DELETE /register/<client_id>` with a token of the same app deletes its
-client and answers 204. A client that is gone or belongs to another app answers 404.
+When a deployment goes away, `identityBroker:deleteClient` deletes its client. A client that is gone
+is no error.
 
 ## Standards
 
 OAuth 2.1 (code flow, PKCE S256, exact redirect URIs, `iss` on responses), OpenID Connect Core and
-Discovery, RFC 7591, RFC 8414, RFC 9207, RFC 9700. Departures are named in
-[docs/design.md](docs/design.md).
+Discovery, RFC 8414, RFC 9207, RFC 9700. Departures are named in [docs/design.md](docs/design.md).
 
 ## License
 

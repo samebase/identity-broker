@@ -27,13 +27,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
       create: FunctionReference<
         "mutation",
         "internal",
-        {
-          allowedCallbackHosts: Array<string>;
-          appId: string;
-          createdAt: number;
-          firstParty: boolean;
-          name: string;
-        },
+        { appId: string; createdAt: number; firstParty: boolean; name: string },
         null,
         Name
       >;
@@ -42,7 +36,6 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         "internal",
         { appId: string },
         {
-          allowedCallbackHosts: Array<string>;
           appId: string;
           createdAt: number;
           firstParty: boolean;
@@ -55,7 +48,6 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         "internal",
         {},
         Array<{
-          allowedCallbackHosts: Array<string>;
           appId: string;
           createdAt: number;
           firstParty: boolean;
@@ -67,13 +59,6 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         "mutation",
         "internal",
         { appId: string },
-        null,
-        Name
-      >;
-      setAllowedCallbackHosts: FunctionReference<
-        "mutation",
-        "internal",
-        { allowedCallbackHosts: Array<string>; appId: string },
         null,
         Name
       >;
@@ -442,13 +427,6 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         null,
         Name
       >;
-      unregister: FunctionReference<
-        "mutation",
-        "internal",
-        { appId: string; clientId: string },
-        boolean,
-        Name
-      >;
     };
     lifecycle: {
       cleanup: FunctionReference<
@@ -464,49 +442,8 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
           authorizationCodes: number;
           emailSends: number;
           previewClients: number;
-          registrationTokens: number;
           signIns: number;
         },
-        Name
-      >;
-    };
-    registration: {
-      listTokens: FunctionReference<
-        "query",
-        "internal",
-        { appId: string },
-        Array<{ createdAt: number; expiresAt: number; tokenHash: string }>,
-        Name
-      >;
-      mintToken: FunctionReference<
-        "mutation",
-        "internal",
-        {
-          appId: string;
-          createdAt: number;
-          expiresAt: number;
-          tokenHash: string;
-        },
-        null,
-        Name
-      >;
-      readToken: FunctionReference<
-        "query",
-        "internal",
-        { now: number; tokenHash: string },
-        {
-          allowedCallbackHosts: Array<string>;
-          appId: string;
-          firstParty: boolean;
-          name: string;
-        } | null,
-        Name
-      >;
-      revokeToken: FunctionReference<
-        "mutation",
-        "internal",
-        { tokenHash: string },
-        null,
         Name
       >;
     };

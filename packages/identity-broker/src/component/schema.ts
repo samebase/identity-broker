@@ -94,20 +94,10 @@ export default defineSchema({
     appId: string(),
     name: string(),
     firstParty: boolean(),
-    /** Exact hosts or `*.suffix` patterns a client callback may use, e.g. `*.convex.site`. */
-    allowedCallbackHosts: array(string()),
+    /** No longer read. The field stays until the rows of the existing hub have lost it. */
+    allowedCallbackHosts: optional(array(string())),
     createdAt: number(),
   }).index("by_app_id", ["appId"]),
-
-  registrationTokens: defineTable({
-    tokenHash: string(),
-    appId: string(),
-    expiresAt: number(),
-    createdAt: number(),
-  })
-    .index("by_token_hash", ["tokenHash"])
-    .index("by_app_id", ["appId"])
-    .index("by_expires_at", ["expiresAt"]),
 
   clients: defineTable({
     clientId: string(),

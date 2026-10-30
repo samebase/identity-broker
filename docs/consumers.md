@@ -41,31 +41,23 @@ export const { startSignIn: startSignInWithHub, completeSignIn: completeSignInWi
   );
 ```
 
-Register the deployment once, after it exists, with the app's registration token:
+Register the deployment once, after it exists, with the hub's deploy key:
 
 ```sh
-curl -sS -X POST "$HUB/register" \
-  -H "Authorization: Bearer $HUB_REGISTRATION_TOKEN" -H "Content-Type: application/json" \
-  -d "{\"redirect_uris\":[\"$CONVEX_SITE_URL/oauth/hub/callback\"],\"client_name\":\"Bristol\",\"software_version\":\"$DEPLOYMENT\",\"deployment_type\":\"preview\",\"token_endpoint_auth_method\":\"client_secret_post\"}"
+npx convex run identityBroker:registerClient "{\"appId\":\"bristol\",\"redirectUri\":\"$CONVEX_SITE_URL/oauth/hub/callback\",\"deploymentType\":\"preview\",\"clientName\":\"Bristol\",\"softwareVersion\":\"$DEPLOYMENT\",\"tokenEndpointAuthMethod\":\"client_secret_post\"}"
 ```
 
 `client_secret_post` because Convex Auth's generic OAuth method posts the client credentials in the
-body; without it the client gets the RFC 7591 default, `client_secret_basic`.
+body.
 
-Store the returned `client_id` and `client_secret` on that deployment as `HUB_CLIENT_ID` and
-`HUB_CLIENT_SECRET` (`npx convex env set --deployment <name> ...`). Keep the registration token in
-CI secrets next to the deploy key, never in a deployment's env.
+Store the returned `issuer`, `clientId`, and `clientSecret` on that deployment as `HUB_ISSUER`,
+`HUB_CLIENT_ID`, and `HUB_CLIENT_SECRET` (`npx convex env set --deployment <name> ...`). When the
+deployment goes away, `identityBroker:deleteClient '{"clientId":"..."}'` deletes its client.
 
-When the deployment goes away, delete its client with a token of the same app (204, or 404 for a
-client that is already gone):
-
-```sh
-curl -sS -X DELETE "$HUB/register/$HUB_CLIENT_ID" -H "Authorization: Bearer $HUB_REGISTRATION_TOKEN"
-```
-
-In an Alchemy v2 stack, the `IdentityHub.Client` resource of `@samebase/alchemy-identity-hub` makes
-these requests: it registers at deploy time and deletes on destroy. `Convex.EnvironmentVariable`
-stores the client on the deployment.
+In an Alchemy v2 stack, the `Convex.HubClient` resource of `@samebase/alchemy-convex` makes these
+calls with a short-lived key of the base: it registers at deploy time and deletes on destroy. The
+`env` of `Convex.Deployment` stores the client on the deployment. The `alchemy-convex hub-client`
+command does the same for a development deployment.
 
 The `connector` query parameter on `/authorize` (`connector=github`) skips the chooser for a
 first-party app. Each app sees its own pairwise `sub`.
