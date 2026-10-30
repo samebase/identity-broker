@@ -99,9 +99,6 @@ with `firstParty` false. A Convex Auth v2 app points its generic OAuth method at
 When a deployment goes away, `identityBroker:deleteClient` deletes its client. A client that is gone
 is no error.
 
-The route `/register` and its registration tokens are deprecated. They stay until the deployed apps
-have moved, and a later release removes them.
-
 ## Standards
 
 OAuth 2.1 (code flow, PKCE S256, exact redirect URIs, `iss` on responses), OpenID Connect Core and

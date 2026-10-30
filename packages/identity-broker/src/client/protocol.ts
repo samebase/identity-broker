@@ -9,14 +9,9 @@ export type Validation<T> =
 
 const MAX_STATE_LENGTH = 4096;
 const MAX_REDIRECT_URI_LENGTH = 2048;
-const MAX_CLIENT_NAME_LENGTH = 120;
 const pkceValuePattern = /^[A-Za-z0-9\-._~]{43,128}$/;
 
-export const TOKEN_ENDPOINT_AUTH_METHODS = ["client_secret_post", "client_secret_basic"] as const;
-export type TokenEndpointAuthMethod = (typeof TOKEN_ENDPOINT_AUTH_METHODS)[number];
-
-export const DEPLOYMENT_TYPES = ["production", "development", "preview"] as const;
-export type DeploymentType = (typeof DEPLOYMENT_TYPES)[number];
+export type TokenEndpointAuthMethod = "client_secret_post" | "client_secret_basic";
 
 /** The own enumerable entries of a JSON value, or an empty record for anything but an object. */
 export function asRecord(value: unknown): Record<string, unknown> {
@@ -61,126 +56,6 @@ export function parseRedirectUri(value: string): URL | null {
     return url;
   }
   return null;
-}
-
-/**
- * Whether `hostname` is covered by one of an app's allowed callback hosts: an exact host, or a
- * `*.suffix` pattern whose wildcard stands for exactly one leading label.
- */
-export function hostAllowed(hostname: string, allowedHosts: readonly string[]): boolean {
-  const host = hostname.toLowerCase();
-  return allowedHosts.some((allowed) => {
-    const pattern = allowed.toLowerCase();
-    if (!pattern.startsWith("*.")) {
-      return host === pattern;
-    }
-    const suffix = pattern.slice(1);
-    if (!host.endsWith(suffix)) {
-      return false;
-    }
-    const label = host.slice(0, host.length - suffix.length);
-    return label.length > 0 && !label.includes(".");
-  });
-}
-
-export type RegistrationInput = {
-  redirectUri: string;
-  clientName: string;
-  softwareVersion: string;
-  deploymentType: DeploymentType;
-  tokenEndpointAuthMethod: TokenEndpointAuthMethod;
-};
-
-function readString(value: unknown, maxLength: number): string | null {
-  if (typeof value !== "string") {
-    return null;
-  }
-  const trimmed = value.trim();
-  return trimmed.length === 0 || trimmed.length > maxLength ? null : trimmed;
-}
-
-/** RFC 7591 registration metadata as this provider accepts it: one redirect URI per client. */
-export function validateRegistration(payload: unknown): Validation<RegistrationInput> {
-  if (typeof payload !== "object" || payload === null || Array.isArray(payload)) {
-    return invalid(400, "invalid_client_metadata", "The request body must be a JSON object.");
-  }
-  const record = asRecord(payload);
-
-  const redirectUris = record["redirect_uris"];
-  if (!Array.isArray(redirectUris) || redirectUris.length !== 1) {
-    return invalid(
-      400,
-      "invalid_redirect_uri",
-      "redirect_uris must hold exactly one URI: a client is one deployment.",
-    );
-  }
-  const redirectUri = typeof redirectUris[0] === "string" ? redirectUris[0] : "";
-  if (parseRedirectUri(redirectUri) === null) {
-    return invalid(
-      400,
-      "invalid_redirect_uri",
-      "The redirect URI must be an absolute https URL without a fragment, or http on a loopback host.",
-    );
-  }
-
-  const clientName = readString(record["client_name"], MAX_CLIENT_NAME_LENGTH);
-  if (clientName === null) {
-    return invalid(400, "invalid_client_metadata", "client_name is required.");
-  }
-
-  const softwareVersion = readString(record["software_version"] ?? "unknown", 200);
-  if (softwareVersion === null) {
-    return invalid(400, "invalid_client_metadata", "software_version must be a non-empty string.");
-  }
-
-  const deploymentType = DEPLOYMENT_TYPES.find((type) => type === record["deployment_type"]);
-  if (deploymentType === undefined) {
-    return invalid(
-      400,
-      "invalid_client_metadata",
-      `deployment_type must be one of ${DEPLOYMENT_TYPES.join(", ")}.`,
-    );
-  }
-
-  // RFC 7591 section 2: the default is client_secret_basic.
-  const authMethod = TOKEN_ENDPOINT_AUTH_METHODS.find(
-    (method) => method === (record["token_endpoint_auth_method"] ?? "client_secret_basic"),
-  );
-  if (authMethod === undefined) {
-    return invalid(
-      400,
-      "invalid_client_metadata",
-      `token_endpoint_auth_method must be one of ${TOKEN_ENDPOINT_AUTH_METHODS.join(", ")}.`,
-    );
-  }
-
-  const grantTypes = record["grant_types"];
-  if (
-    grantTypes !== undefined &&
-    (!Array.isArray(grantTypes) ||
-      grantTypes.length !== 1 ||
-      grantTypes[0] !== "authorization_code")
-  ) {
-    return invalid(400, "invalid_client_metadata", 'grant_types must be ["authorization_code"].');
-  }
-  const responseTypes = record["response_types"];
-  if (
-    responseTypes !== undefined &&
-    (!Array.isArray(responseTypes) || responseTypes.length !== 1 || responseTypes[0] !== "code")
-  ) {
-    return invalid(400, "invalid_client_metadata", 'response_types must be ["code"].');
-  }
-
-  return {
-    ok: true,
-    value: {
-      redirectUri,
-      clientName,
-      softwareVersion,
-      deploymentType,
-      tokenEndpointAuthMethod: authMethod,
-    },
-  };
 }
 
 export type AuthorizeInput = {
