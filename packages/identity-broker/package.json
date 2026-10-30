@@ -43,7 +43,7 @@
     "oauth4webapi": "3.8.8"
   },
   "devDependencies": {
-    "@types/node": "24.19.2",
+    "@types/node": "26.6.5",
     "convex": "1.47.0",
     "convex-test": "0.0.61",
     "openid-client": "6.8.8",

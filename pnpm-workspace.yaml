@@ -3,7 +3,7 @@ packages:
 
 catalog:
   "@edge-runtime/vm": 5.0.0
-  "@types/node": 24.19.2
+  "@types/node": 26.6.5
   convex: 1.47.0
   convex-test: 0.0.61
   jose: 6.2.13
