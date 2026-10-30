@@ -18,6 +18,7 @@ const vCleanupArgs = object({
 const vCleanupCounts = object({
   authRequests: number(),
   authorizationCodes: number(),
+  registrationTokens: number(),
   previewClients: number(),
   signIns: number(),
   emailSends: number(),
@@ -47,6 +48,14 @@ async function cleanupBatch(
     .take(BATCH);
   for (const code of codes) {
     await ctx.db.delete("authorizationCodes", code._id);
+  }
+
+  const tokens = await ctx.db
+    .query("registrationTokens")
+    .withIndex("by_expires_at", (q) => q.lt("expiresAt", args.now))
+    .take(BATCH);
+  for (const token of tokens) {
+    await ctx.db.delete("registrationTokens", token._id);
   }
 
   const { previewClientMaxAgeMs } = args;
@@ -87,6 +96,7 @@ async function cleanupBatch(
   const counts = {
     authRequests: requests.length,
     authorizationCodes: codes.length,
+    registrationTokens: tokens.length,
     previewClients: previewClients.length,
     signIns: signIns.length,
     emailSends: emailSends.length,

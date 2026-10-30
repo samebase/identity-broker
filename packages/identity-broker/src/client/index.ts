@@ -30,10 +30,12 @@ import { parseKeySet, publicJwks, SIGNING_ALGORITHM, type KeySet } from "./keys.
 import {
   canonicalEmail,
   parseRedirectUri,
+  hostAllowed,
   readBearerToken,
   readClientAuthentication,
   validateAuthorizeRest,
   validateAuthorizeTarget,
+  validateRegistration,
   validateTokenRequest,
 } from "./protocol.js";
 import {
@@ -89,6 +91,7 @@ const AUTH_TIME_SKEW_SECONDS = 60;
 const EMAIL_MAX_ATTEMPTS = 5;
 /** The scopes the broker grants; any other requested scope is dropped. */
 const SCOPES = ["openid", "email", "profile"];
+const REGISTRATION_TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 /** How long `cleanup` keeps an audit row of an issued id_token. */
 export const SIGN_IN_RETENTION_MS = 90 * 24 * 60 * 60 * 1000;
 
@@ -175,6 +178,7 @@ export function defineIdentityBroker(config: IdentityBrokerConfig) {
     token_endpoint: `${issuer}/token`,
     userinfo_endpoint: `${issuer}/userinfo`,
     jwks_uri: `${issuer}/.well-known/jwks.json`,
+    registration_endpoint: `${issuer}/register`,
     scopes_supported: SCOPES,
     response_types_supported: ["code"],
     response_modes_supported: ["query"],
@@ -776,6 +780,116 @@ export function defineIdentityBroker(config: IdentityBrokerConfig) {
     return errorPage("Invalid form", "Unknown step.", 400);
   });
 
+  /** The app of a registration token, or its 401. */
+  async function registrationApp(ctx: Ctx, request: Request, now: number) {
+    const token = readBearerToken(request.headers.get("authorization"));
+    if (token === null) {
+      return {
+        ok: false,
+        response: oauthError(
+          401,
+          "invalid_token",
+          "A registration token is required as a Bearer token.",
+        ),
+      } as const;
+    }
+    const app = await ctx.runQuery(component.registration.readToken, {
+      tokenHash: await sha256Hex(token),
+      now,
+    });
+    if (app === null) {
+      return {
+        ok: false,
+        response: oauthError(401, "invalid_token", "The registration token is unknown or expired."),
+      } as const;
+    }
+    return { ok: true, app } as const;
+  }
+
+  const register = httpActionGeneric(async (ctx, request) => {
+    const now = Date.now();
+    const auth = await registrationApp(ctx, request, now);
+    if (!auth.ok) {
+      return auth.response;
+    }
+    const { app } = auth;
+    let payload: unknown;
+    try {
+      payload = await request.json();
+    } catch {
+      return oauthError(400, "invalid_client_metadata", "The request body must be JSON.");
+    }
+    const validation = validateRegistration(payload);
+    if (!validation.ok) {
+      return oauthError(validation.status, validation.error, validation.description);
+    }
+    const host = new URL(validation.value.redirectUri).hostname;
+    if (!hostAllowed(host, app.allowedCallbackHosts)) {
+      return oauthError(
+        400,
+        "invalid_redirect_uri",
+        `The host "${host}" is not allowed for this app.`,
+      );
+    }
+    const clientId = `cl_${randomToken(16)}`;
+    const clientSecret = randomToken(32);
+    await ctx.runMutation(component.clients.create, {
+      clientId,
+      appId: app.appId,
+      secretHash: await sha256Hex(clientSecret),
+      tokenEndpointAuthMethod: validation.value.tokenEndpointAuthMethod,
+      redirectUri: validation.value.redirectUri,
+      deploymentType: validation.value.deploymentType,
+      clientName: validation.value.clientName,
+      softwareVersion: validation.value.softwareVersion,
+      createdAt: now,
+    });
+    return json(
+      {
+        client_id: clientId,
+        client_secret: clientSecret,
+        client_id_issued_at: Math.floor(now / 1000),
+        client_secret_expires_at: 0,
+        redirect_uris: [validation.value.redirectUri],
+        client_name: validation.value.clientName,
+        software_id: app.appId,
+        software_version: validation.value.softwareVersion,
+        deployment_type: validation.value.deploymentType,
+        token_endpoint_auth_method: validation.value.tokenEndpointAuthMethod,
+        grant_types: ["authorization_code"],
+        response_types: ["code"],
+      },
+      201,
+    );
+  });
+
+  const registerPrefix = path("/register/");
+
+  /**
+   * `DELETE <prefix>/register/<client_id>` deletes a client of the token's app, of any deployment
+   * type. The segment is compared as sent: `/register` issues `cl_` and base64url, which a path
+   * carries as is. A client that is gone and a client of another app both answer 404, never 403,
+   * so a token learns nothing about another app's clients.
+   */
+  const unregister = httpActionGeneric(async (ctx, request) => {
+    const auth = await registrationApp(ctx, request, Date.now());
+    if (!auth.ok) {
+      return auth.response;
+    }
+    const deleted = await ctx.runMutation(component.clients.unregister, {
+      clientId: new URL(request.url).pathname.slice(registerPrefix.length),
+      appId: auth.app.appId,
+    });
+    if (!deleted) {
+      return oauthError(
+        404,
+        "invalid_client",
+        "No client with this id belongs to the app of this registration token.",
+      );
+    }
+    return new Response(null, { status: 204 });
+  });
+
   const token = httpActionGeneric(async (ctx, request) => {
     const contentType = request.headers.get("content-type")?.toLowerCase() ?? "";
     if (!contentType.startsWith("application/x-www-form-urlencoded")) {
@@ -910,6 +1024,8 @@ export function defineIdentityBroker(config: IdentityBrokerConfig) {
       http.route({ path: path("/authorize"), method: "GET", handler: authorize });
       http.route({ path: path("/authorize"), method: "POST", handler: authorize });
       http.route({ path: path("/continue"), method: "GET", handler: continueSignIn });
+      http.route({ path: path("/register"), method: "POST", handler: register });
+      http.route({ pathPrefix: registerPrefix, method: "DELETE", handler: unregister });
       http.route({ path: path("/token"), method: "POST", handler: token });
       http.route({ path: path("/userinfo"), method: "GET", handler: userinfo });
       http.route({ path: path("/userinfo"), method: "POST", handler: userinfo });
@@ -931,10 +1047,10 @@ export function defineIdentityBroker(config: IdentityBrokerConfig) {
      * host module such as `convex/identityBroker.ts`.
      */
     admin() {
-      const { boolean, string } = v;
+      const { array, boolean, number, optional, string } = v;
       return {
         createApp: internalMutationGeneric({
-          args: { name: string(), firstParty: boolean() },
+          args: { name: string(), firstParty: boolean(), allowedCallbackHosts: array(string()) },
           returns: v.object({ appId: string() }),
           handler: async (ctx, args) => {
             const slug =
@@ -950,6 +1066,7 @@ export function defineIdentityBroker(config: IdentityBrokerConfig) {
               appId,
               name: args.name,
               firstParty: args.firstParty,
+              allowedCallbackHosts: args.allowedCallbackHosts,
               createdAt: Date.now(),
             });
             return { appId };
@@ -1000,6 +1117,52 @@ export function defineIdentityBroker(config: IdentityBrokerConfig) {
               createdAt: now,
             });
             return { issuer, clientId, clientSecret };
+          },
+        }),
+        mintRegistrationToken: internalMutationGeneric({
+          args: { appId: string(), expiresInDays: optional(number()) },
+          returns: v.object({ token: string(), expiresAt: number() }),
+          handler: async (ctx, args) => {
+            const token = `rt_${randomToken(32)}`;
+            const now = Date.now();
+            const expiresAt =
+              now +
+              (args.expiresInDays === undefined
+                ? REGISTRATION_TOKEN_TTL_MS
+                : args.expiresInDays * 24 * 60 * 60 * 1000);
+            await ctx.runMutation(component.registration.mintToken, {
+              tokenHash: await sha256Hex(token),
+              appId: args.appId,
+              expiresAt,
+              createdAt: now,
+            });
+            return { token, expiresAt };
+          },
+        }),
+        setAllowedCallbackHosts: internalMutationGeneric({
+          args: { appId: string(), allowedCallbackHosts: array(string()) },
+          returns: v.null(),
+          handler: async (ctx, args) => {
+            await ctx.runMutation(component.apps.setAllowedCallbackHosts, {
+              appId: args.appId,
+              allowedCallbackHosts: args.allowedCallbackHosts,
+            });
+            return null;
+          },
+        }),
+        listRegistrationTokens: internalQueryGeneric({
+          args: { appId: string() },
+          handler: async (ctx, args) =>
+            await ctx.runQuery(component.registration.listTokens, { appId: args.appId }),
+        }),
+        revokeRegistrationToken: internalMutationGeneric({
+          args: { tokenHash: string() },
+          returns: v.null(),
+          handler: async (ctx, args) => {
+            await ctx.runMutation(component.registration.revokeToken, {
+              tokenHash: args.tokenHash,
+            });
+            return null;
           },
         }),
         deleteClient: internalMutationGeneric({

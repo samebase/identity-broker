@@ -17,13 +17,14 @@ const cl = {
   tokenEndpointAuthMethod: "client_secret_post",
 } as const;
 
-/** App "app" with its client "cl", as `registerClient` stores them. */
+/** App "app" with its client "cl", as /register stores them. */
 async function registered() {
   const t = convexTest(schema, modules);
   await t.mutation(api.apps.create, {
     appId: "app",
     name: "App",
     firstParty: true,
+    allowedCallbackHosts: ["app.test"],
     createdAt: now,
   });
   await t.mutation(api.clients.create, {

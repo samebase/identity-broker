@@ -29,7 +29,9 @@ itself.
 deployment of an app as a client. There is no public registration endpoint, and no token of its own:
 in a team base, everyone who may register a client already holds the Convex credential of the team,
 so a second credential would guard nothing. For the same reason an app has no list of allowed
-callback hosts. The first client of an app id creates the app as a first-party app.
+callback hosts. The first client of an app id creates the app as a first-party app. The routes
+`/register` and `/register/<client_id>`, their tokens, and the host list are deprecated: they stay
+until the deployed apps have moved, and a later release removes them.
 
 ## Token endpoint
 
