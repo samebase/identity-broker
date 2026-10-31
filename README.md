@@ -1,3 +1,5 @@
+# Moved to [samebase/samebase](https://github.com/samebase/samebase/tree/main/packages/identity-broker)
+
 # identity-broker
 
 An OpenID Provider that runs on [Convex](https://convex.dev). One deployment holds a team's sign-in
